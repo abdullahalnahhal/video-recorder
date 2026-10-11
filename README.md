@@ -11,7 +11,7 @@ Everything runs in the browser. Nothing is uploaded, and the video is saved stra
 | | |
 |---|---|
 | **Sources** | Webcam · Screen · Screen + Webcam (picture-in-picture) |
-| **Files & images** | Add PDFs, PowerPoint/Word/Excel files, images or HTML pages, pick one and switch between them — it shows up in the same slot a shared screen would, including inside the PiP overlay. See [Files & images](#files--images) below |
+| **Files & images** | Add PDFs, PowerPoint/Word/Excel files, images or HTML pages, pick one and switch between them. Shown on its own, with an independent toggle to show (or hide) the webcam in a small corner. See [Files & images](#files--images) below |
 | **Switch while recording** | Change source, effects, background or file mid-recording without breaking the file |
 | **Webcam overlay** | Choose the corner, size (12–40 % of the width) and shape (rounded rectangle or circle) |
 | **Webcam effects** | Blur (adjustable), Black & white, High contrast. They can be combined |
@@ -102,7 +102,7 @@ Upload the contents of `dist/` to any static host: GitHub Pages, Netlify, Vercel
 5. Click **Stop & save**, then choose where to save the video in the "Save as" window.
 
 > 💡 To record tab or system sound, tick **"Share tab audio"** / **"Share system audio"** in the browser's screen-share window.
-> 💡 To present a document instead of your screen, open the **Files** tab, add it, and pick it — then switch to **Screen** or **Screen + Webcam**.
+> 💡 To present a document, open the **Files** tab, add it, and pick it — it shows up right away, with its own toggle to add your webcam in a corner if you want it.
 
 ---
 
@@ -117,7 +117,11 @@ Open the **Files** tab and click **Add files…** to add any mix of:
 - **Excel** — `.xlsx`
 - **HTML** pages
 
-Pick one from the list and it fills the same slot a shared screen would — switch the **Source** to **Screen** or **Screen + Webcam** to see it on the stage (picking a file while on **Webcam** switches you to **Screen** automatically). A file with several pages/slides/sheets shows its page count and a slider underneath its name — drag it to jump straight to any page, or use the **‹ ›** buttons to step one at a time. Click **Stop showing** to go back to a live shared screen. You can keep adding and switching between files, including mid-recording.
+Pick one from the list and it fills the stage straight away — a file is its own thing, independent of the **Source** control (Webcam/Screen/Screen + Webcam), which keeps working normally for whatever you switch back to once you click **Stop showing**.
+
+Tick **Show webcam in a corner** to add your webcam on top of the file, the same picture-in-picture overlay used for Screen + Webcam — corner, size and shape are shared with it, in the **Webcam overlay** panel. Leave it unticked to show just the file.
+
+A file with several pages/slides/sheets shows its page count and a slider underneath its name — drag it to jump straight to any page, or use the **‹ ›** buttons to step one at a time. You can keep adding and switching between files, including mid-recording.
 
 **Fidelity:** PDFs and images render pixel-for-pixel like the original — PDF rendering uses [pdf.js](https://mozilla.github.io/pdf.js/), the same engine behind Firefox's built-in PDF viewer. PowerPoint, Word and Excel are a different story: there is no pixel-perfect way to render those formats in a browser without a server to convert them first, and this project has no server. So instead you get an honest, readable stand-in:
 
@@ -237,7 +241,7 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 - **Face tracking (AR + beauty):** [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) finds 478 points on your face each frame. AR stickers are plain Canvas 2D shapes (no image assets) positioned, scaled and rotated from a handful of those points (eye corners for scale/tilt, nose tip, forehead, mouth corners). Smooth skin traces the same points into a face-shaped mask, feathers its edge, and blends a softened copy of the image through it — the same mask/blend technique the background cutout uses, just aimed at skin instead of a person silhouette.
 - **Effects & lighting:** Canvas 2D filters (`blur`, `grayscale`, `contrast`, `brightness`). Blur is computed at quarter resolution and scaled up, which is much cheaper and looks the same. Auto light correction samples an 8×8 downscale of the frame each tick to estimate brightness — cheap enough to not matter, smoothed so it doesn't flicker.
 - **Sound mixer:** a fixed Web Audio graph built once per channel (see [Sound mixer](#sound-mixer)); every control is a parameter change on an always-connected node, never a rewire, so turning an effect on or off mid-recording can't click or glitch.
-- **Files & images:** each uploaded file is rendered once, up front, into one `<canvas>` per page/slide/sheet, cached in memory; selecting a file just swaps which cached canvas `drawContain()` draws each frame — identical code path to drawing the live shared screen (see [Files & images](#files--images)). PDFs render through [pdf.js](https://mozilla.github.io/pdf.js/). PPTX slide text/images are pulled directly out of the file's XML via [JSZip](https://stuk.github.io/jszip/) (a `.pptx`/`.docx`/`.xlsx` is just a zip of XML files). DOCX is converted to HTML via [mammoth.js](https://github.com/mwilliamson/mammoth.js). XLSX is parsed with [SheetJS](https://sheetjs.com/). HTML/DOCX output is rasterized with [html2canvas](https://html2canvas.hertzen.com/) inside a sandboxed, script-disabled `<iframe>`.
+- **Files & images:** each uploaded file is rendered once, up front, into one `<canvas>` per page/slide/sheet, cached in memory; selecting a file just swaps which cached canvas gets drawn each frame, using the same `drawContain()` the live shared screen uses — but checked and drawn *before* the Source mode logic, so it takes over the stage on its own rather than needing a Screen-shaped mode, with its own "show webcam in a corner" toggle reusing the existing picture-in-picture drawing code (see [Files & images](#files--images)). PDFs render through [pdf.js](https://mozilla.github.io/pdf.js/). PPTX slide text/images are pulled directly out of the file's XML via [JSZip](https://stuk.github.io/jszip/) (a `.pptx`/`.docx`/`.xlsx` is just a zip of XML files). DOCX is converted to HTML via [mammoth.js](https://github.com/mwilliamson/mammoth.js). XLSX is parsed with [SheetJS](https://sheetjs.com/). HTML/DOCX output is rasterized with [html2canvas](https://html2canvas.hertzen.com/) inside a sandboxed, script-disabled `<iframe>`.
 - **Saving:** the [File System Access API](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access) (`showSaveFilePicker`), opened directly from the *Stop* click, with a normal download as the fallback.
 
 ---
@@ -286,7 +290,7 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 | The mix sounds thin or the music disappears completely | The sidechain is probably set to **gating** with a low threshold — try **compression** mode, or reduce its depth/raise its threshold. |
 | A file I added shows "Could not open this file" | The file may be corrupted, password-protected, or (for Office formats) actually the older binary `.doc`/`.ppt`/`.xls` type saved with a `.docx`/`.pptx`/`.xlsx` extension. Re-save/export it from its original application and add it again. |
 | My PPTX/DOCX/XLSX doesn't look like the original at all | Expected — see [Files & images](#files--images). Only text (+ one picture per slide for PPTX) and plain data come through; layout, fonts, charts and styling from the original file don't. For an exact-looking result, export the file as a **PDF** instead and add that. |
-| Selecting a file didn't switch the stage to show it | Make sure **Source** is set to **Screen** or **Screen + Webcam** — a file only shows in that slot, same as a live shared screen would. Picking a file while on **Webcam** should switch you there automatically. |
+| My webcam isn't showing while a file is on stage | Tick **Show webcam in a corner** in the Files panel's active-file bar — a file doesn't automatically include the webcam, regardless of the Source mode. |
 
 ---
 

@@ -79,6 +79,7 @@
     btnAddFiles: $('#btnAddFiles'),
     fileActiveBar: $('#fileActiveBar'),
     fileActiveLabel: $('#fileActiveLabel'),
+    fileShowWebcam: $('#fileShowWebcam'),
     filePageRow: $('#filePageRow'),
     filePageSlider: $('#filePageSlider'),
     filePageCount: $('#filePageCount'),
@@ -152,6 +153,7 @@
     beautySmooth: Number(els.beautySmooth.value),
     beautyGlow: Number(els.beautyGlow.value),
     pip: { corner: 'br', size: Number(els.pipSize.value) / 100, shape: els.pipShape.value },
+    fileShowWebcam: false,
     formats: [],
     recording: null,
     stopping: false,
@@ -187,9 +189,19 @@
     const camReady = isReady(camVideo, state.cam);
     const screenReady = isReady(screenVideo, state.screen);
     const fileCanvas = fileSource.getCurrentCanvas();
+    const wantsPipForFile = fileCanvas && state.fileShowWebcam;
 
-    if (camReady && needsCamera()) {
+    if (camReady && (needsCamera() || wantsPipForFile)) {
       updateCameraLayer();
+    }
+
+    // A selected file is shown on its own — independent of the Webcam/
+    // Screen/Screen + Webcam source — with its own small "show webcam in
+    // a corner" toggle, rather than needing a Screen-shaped mode.
+    if (fileCanvas) {
+      drawContain(fileCanvas, 0, 0, W, H);
+      if (wantsPipForFile && camReady) drawPip(W, H);
+      return;
     }
 
     if (state.mode === 'webcam') {
@@ -197,10 +209,7 @@
       return;
     }
 
-    // A selected file takes over the same "screen" slot a live shared
-    // screen would otherwise fill — including inside Screen + Webcam PiP.
-    if (fileCanvas) drawContain(fileCanvas, 0, 0, W, H);
-    else if (screenReady) drawContain(screenVideo, 0, 0, W, H);
+    if (screenReady) drawContain(screenVideo, 0, 0, W, H);
     if (state.mode === 'both' && camReady) drawPip(W, H);
   }
 
@@ -1055,9 +1064,12 @@
     return ok;
   }
 
-  // Free the camera when it isn't shown, so its light turns off.
+  // Free the camera when it isn't shown, so its light turns off. A file's
+  // own "show webcam in a corner" toggle counts as needing it too, even
+  // when the Source mode itself doesn't.
   function releaseUnusedSources() {
-    if (!state.recording && !needsCamera()) stopCamera();
+    const wantsCameraForFile = state.fileShowWebcam && fileSource.isShowingFile();
+    if (!state.recording && !needsCamera() && !wantsCameraForFile) stopCamera();
   }
 
   function describeMediaError(err, device) {
@@ -1585,9 +1597,8 @@
     updateUI(); // also refreshes the overlay
   }
 
-  async function selectLibraryFile(id) {
+  function selectLibraryFile(id) {
     fileSource.select(id); // triggers renderFileList() via fileSource.onChange()
-    if (state.mode === 'webcam') await setMode('screen');
   }
 
   /* ------------------------------------------------------------------------
@@ -2384,7 +2395,7 @@
     els.modeButtons.forEach((button) => {
       button.setAttribute('aria-checked', String(button.dataset.mode === state.mode));
     });
-    els.pipPanel.hidden = state.mode !== 'both';
+    els.pipPanel.hidden = state.mode !== 'both' && !(state.fileShowWebcam && fileSource.isShowingFile());
     els.btnChangeScreen.hidden = !needsScreen() || !state.screen || fileSource.isShowingFile();
     els.effectsPanel.setAttribute('aria-disabled', String(!needsCamera()));
     els.bgPanel.setAttribute('aria-disabled', String(!needsCamera()));
@@ -2664,6 +2675,11 @@
     els.btnNextPage.addEventListener('click', () => fileSource.nextPage());
     els.filePageSlider.addEventListener('input', () => fileSource.goToPage(Number(els.filePageSlider.value) - 1));
     els.btnStopFile.addEventListener('click', () => fileSource.showLive());
+    els.fileShowWebcam.addEventListener('change', async () => {
+      state.fileShowWebcam = els.fileShowWebcam.checked;
+      if (state.fileShowWebcam) await ensureCamera();
+      updateUI();
+    });
 
     els.micEnabled.addEventListener('change', async () => {
       if (els.micEnabled.checked) await activateAudioPreview();
