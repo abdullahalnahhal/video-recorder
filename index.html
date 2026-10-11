@@ -53,6 +53,13 @@
 
     <aside class="panel-col">
 
+      <div class="segmented tabs" role="tablist" aria-label="Settings" id="settingsTabs">
+        <button type="button" role="tab" data-tab="video" aria-selected="true">Video</button>
+        <button type="button" role="tab" data-tab="audio" aria-selected="false">Sound</button>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="video">
+
       <section class="panel">
         <h2>Source</h2>
         <div class="segmented" role="radiogroup" aria-label="Recording source" id="modeGroup">
@@ -118,7 +125,26 @@
       </section>
 
       <section class="panel">
-        <h2>Audio</h2>
+        <h2>Output</h2>
+        <div class="row">
+          <label for="resolution">Resolution</label>
+          <select id="resolution">
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="1280x720">720p (1280×720)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="format">Format</label>
+          <select id="format"></select>
+        </div>
+      </section>
+
+      </div>
+
+      <div class="tab-panel" data-tab-panel="audio" hidden>
+
+      <section class="panel">
+        <h2>Audio sources</h2>
         <label class="toggle">
           <input type="checkbox" id="micEnabled" checked>
           <span>Microphone</span>
@@ -133,20 +159,66 @@
         </label>
       </section>
 
+      <section class="panel channel-strip" id="channelMic" data-channel="mic"></section>
+
+      <section class="panel channel-strip" id="channelSystem" data-channel="system"></section>
+
       <section class="panel">
-        <h2>Output</h2>
+        <h2>Reverb bus</h2>
+        <p class="note">Shared by both channels' "Reverb send" amount, above.</p>
+        <div class="row"><label>Room size</label><input type="range" id="reverbSize" min="0" max="100" value="40"><span class="val" id="reverbSizeVal"></span></div>
+        <div class="row"><label>Return level</label><input type="range" id="reverbReturn" min="0" max="100" value="60"><span class="val" id="reverbReturnVal"></span></div>
+      </section>
+
+      <section class="panel" id="sidechainPanel">
+        <h2>Advanced control — Sidechain</h2>
+        <label class="toggle">
+          <input type="checkbox" id="scEnabled">
+          <span>Enable sidechain</span>
+        </label>
         <div class="row">
-          <label for="resolution">Resolution</label>
-          <select id="resolution">
-            <option value="1920x1080">1080p (1920×1080)</option>
-            <option value="1280x720">720p (1280×720)</option>
+          <label for="scTrigger">Trigger</label>
+          <select id="scTrigger">
+            <option value="mic">Microphone</option>
+            <option value="system">System audio</option>
           </select>
         </div>
+        <p class="note">The trigger channel's level ducks the other channel — e.g. the mic ducks background audio while you talk.</p>
         <div class="row">
-          <label for="format">Format</label>
-          <select id="format"></select>
+          <label for="scMode">Mode</label>
+          <select id="scMode">
+            <option value="comp">Sidechain compression</option>
+            <option value="gate">Sidechain gating</option>
+          </select>
         </div>
+        <div class="row"><label>Threshold</label><input type="range" id="scThreshold" min="-60" max="0" value="-30"><span class="val" id="scThresholdVal"></span></div>
+        <div class="row" id="scRatioRow"><label>Ratio</label><input type="range" id="scRatio" min="1" max="20" value="4" step="0.5"><span class="val" id="scRatioVal"></span></div>
+        <div class="row" id="scDepthRow" hidden><label>Depth</label><input type="range" id="scDepth" min="6" max="60" value="24"><span class="val" id="scDepthVal"></span></div>
+        <div class="row"><label>Attack</label><input type="range" id="scAttack" min="1" max="200" value="15"><span class="val" id="scAttackVal"></span></div>
+        <div class="row"><label>Release</label><input type="range" id="scRelease" min="20" max="1000" value="250"><span class="val" id="scReleaseVal"></span></div>
+        <div class="row"><label>Makeup</label><input type="range" id="scMakeup" min="0" max="24" value="0"><span class="val" id="scMakeupVal"></span></div>
       </section>
+
+      <section class="panel" id="masterPanel">
+        <h2>Master</h2>
+        <div class="row">
+          <label>Level</label>
+          <input type="range" id="masterGain" min="-24" max="12" value="0">
+          <span class="val" id="masterGainVal"></span>
+          <span class="meter" aria-hidden="true"><span class="meter-fill" id="masterMeterFill"></span></span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="masterLimiter" checked>
+          <span>Limiter (prevent clipping)</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="monitorEnabled">
+          <span>Monitor through speakers</span>
+        </label>
+        <p class="note">Only enable monitoring with headphones — otherwise the mic will pick up the speaker output.</p>
+      </section>
+
+      </div>
 
     </aside>
   </main>

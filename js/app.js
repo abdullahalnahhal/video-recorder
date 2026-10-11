@@ -60,6 +60,36 @@
     systemAudio: $('#systemAudio'),
     resolution: $('#resolution'),
     format: $('#format'),
+    tabButtons: $$('#settingsTabs [role="tab"]'),
+    tabPanels: $$('.tab-panel'),
+    channelMic: $('#channelMic'),
+    channelSystem: $('#channelSystem'),
+    scEnabled: $('#scEnabled'),
+    scTrigger: $('#scTrigger'),
+    scMode: $('#scMode'),
+    scThreshold: $('#scThreshold'),
+    scThresholdVal: $('#scThresholdVal'),
+    scRatioRow: $('#scRatioRow'),
+    scRatio: $('#scRatio'),
+    scRatioVal: $('#scRatioVal'),
+    scDepthRow: $('#scDepthRow'),
+    scDepth: $('#scDepth'),
+    scDepthVal: $('#scDepthVal'),
+    scAttack: $('#scAttack'),
+    scAttackVal: $('#scAttackVal'),
+    scRelease: $('#scRelease'),
+    scReleaseVal: $('#scReleaseVal'),
+    scMakeup: $('#scMakeup'),
+    scMakeupVal: $('#scMakeupVal'),
+    masterGain: $('#masterGain'),
+    masterGainVal: $('#masterGainVal'),
+    masterMeterFill: $('#masterMeterFill'),
+    masterLimiter: $('#masterLimiter'),
+    reverbReturn: $('#reverbReturn'),
+    reverbReturnVal: $('#reverbReturnVal'),
+    reverbSize: $('#reverbSize'),
+    reverbSizeVal: $('#reverbSizeVal'),
+    monitorEnabled: $('#monitorEnabled'),
     dialog: $('#resultDialog'),
     resultVideo: $('#resultVideo'),
     resultInfo: $('#resultInfo'),
@@ -504,7 +534,7 @@
       screenVideo.srcObject = stream;
       await screenVideo.play().catch(() => {});
       stream.getVideoTracks()[0].addEventListener('ended', () => onScreenEnded(stream));
-      syncAudio();
+      mixer.syncSources();
       return true;
     } catch (err) {
       if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
@@ -520,7 +550,7 @@
     if (state.screen) state.screen.getTracks().forEach((track) => track.stop());
     state.screen = null;
     screenVideo.srcObject = null;
-    syncAudio();
+    mixer.syncSources();
   }
 
   // Fired when sharing is stopped from the browser's own "Stop sharing" bar.
@@ -575,7 +605,21 @@
   function stopMic() {
     if (state.mic) state.mic.getTracks().forEach((track) => track.stop());
     state.mic = null;
-    syncAudio();
+    mixer.syncSources();
+  }
+
+  // Brings the mixer online and feeds it the current mic/system audio, so
+  // the channel strips and meters are already live once you open the Audio
+  // tab — not only once a recording starts. Safe to call repeatedly.
+  let audioPreviewStarted = false;
+  async function activateAudioPreview() {
+    mixer.resume();
+    if (!audioPreviewStarted) {
+      audioPreviewStarted = true;
+      await mixer.init();
+      if (els.micEnabled.checked) await ensureMic();
+    }
+    mixer.syncSources();
   }
 
   // Requests whatever the current mode needs. Screen first: getDisplayMedia
@@ -633,41 +677,511 @@
   }
 
   /* ------------------------------------------------------------------------
-   * Audio mixing (microphone + screen/tab audio into one track)
+   * Sound mixer: dynamics, noise control, spatial effects, routing, sidechain
+   *
+   * The graph is built once, with a fixed topology, and never rewired after
+   * that — every control (mute, bypass, mix amount...) is a parameter change
+   * on an always-connected node rather than a connect()/disconnect() call.
+   * That avoids the clicks and race conditions that come from rebuilding a
+   * live audio graph, and it means turning an effect off is just steering its
+   * parameters back to "no effect" rather than a structural change:
+   *
+   *   mic ──► trim ─► highpass ─► gate ─► compressor ─► makeup ─┐
+   *                                                             │ (sidechain, shared, 2-in/2-out)
+   *   system ─► trim ─► highpass ─► gate ─► compressor ─► makeup ┘
+   *                             │
+   *            ┌────────────────┴──────────────┐
+   *       postSidechain(mic)              postSidechain(system)
+   *            │  ├─ dry ─────────────┐         │  ├─ dry ─────────────┐
+   *            │  └─ delay/echo ──────┤         │  └─ delay/echo ──────┤
+   *            └─────────────────► out ◄────────┘                     │
+   *                                │  └─ reverbSend ─► reverbBus ─► reverbReturn ─┐
+   *                                └──────────────── routeGain ──────────────────┤
+   *                                                                              ▼
+   *                                                                          masterBus ─► limiter ─┬─► recording destination
+   *                                                                                                 └─► monitor gain ─► speakers
    * --------------------------------------------------------------------- */
 
-  const audio = { ctx: null, dest: null, nodes: {} };
+  const WORKLET_URL = 'js/worklets/audio-fx-processors.js';
+  const dbToLin = (db) => Math.pow(10, db / 20);
 
-  function setupAudio() {
-    if (!audio.ctx) {
-      audio.ctx = new AudioContext();
-      audio.dest = audio.ctx.createMediaStreamDestination();
+  // A convolution reverb impulse, generated on the fly (no audio file needed):
+  // exponentially-decaying noise. `sizePct` (0-100) controls both the tail
+  // length and how fast it decays, from a small room to a long hall.
+  function createReverbImpulse(audioCtx, sizePct) {
+    const duration = 0.5 + (sizePct / 100) * 3;
+    const decay = 3 - (sizePct / 100) * 2;
+    const rate = audioCtx.sampleRate;
+    const length = Math.max(1, Math.floor(rate * duration));
+    const buffer = audioCtx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** decay;
     }
-    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    return buffer;
   }
 
-  function syncAudio() {
-    if (!audio.ctx) return;
-    const recording = Boolean(state.recording);
-    const mic = recording && els.micEnabled.checked ? state.mic : null;
-    const screenHasAudio = state.screen && state.screen.getAudioTracks().length > 0;
-    const screen = recording && els.systemAudio.checked && needsScreen() && screenHasAudio ? state.screen : null;
-    connectAudio('mic', mic);
-    connectAudio('screen', screen);
+  const CHANNEL_DEFAULTS = {
+    trimDb: 0,
+    muted: false,
+    included: true,
+    highpass: false,
+    gateEnabled: false,
+    gateThreshold: -45,
+    gateRelease: 150,
+    compEnabled: false,
+    compThreshold: -24,
+    compRatio: 3,
+    compAttack: 10,
+    compRelease: 150,
+    compMakeup: 0,
+    spatialType: 'none',
+    spatialTime: 250,
+    spatialFeedback: 25,
+    spatialMix: 25,
+    reverbSend: 0,
+  };
+
+  const mixer = (() => {
+    let audioCtx = null;
+    let readyPromise = null;
+    let destination = null;
+    let gateAvailable = false;
+    let sidechainAvailable = false;
+    let sidechainNode = null;
+    let master, limiter, monitorGain, reverbBus, reverbReturn, masterMeter;
+    const channels = {}; // key -> node refs, built lazily once the context exists
+    const channelSettings = { mic: { ...CHANNEL_DEFAULTS }, system: { ...CHANNEL_DEFAULTS } };
+    const sidechainSettings = {
+      enabled: false, trigger: 'mic', mode: 'comp',
+      threshold: -30, ratio: 4, depth: 24, attack: 15, release: 250, makeup: 0,
+    };
+    const masterSettings = { gainDb: 0, limiter: true, reverbSize: 40, reverbReturn: 60, monitor: false };
+    const meterBuf = new Float32Array(512);
+    const CHANNEL_INDEX = { mic: 0, system: 1 };
+
+    function readLevel(analyser) {
+      if (!analyser) return 0;
+      analyser.getFloatTimeDomainData(meterBuf);
+      let sum = 0;
+      for (let i = 0; i < meterBuf.length; i++) sum += meterBuf[i] * meterBuf[i];
+      return Math.min(1, Math.sqrt(sum / meterBuf.length) * 4);
+    }
+
+    function makeChannel(key) {
+      const trim = audioCtx.createGain();
+      const highpass = audioCtx.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 20; // ~inaudible cutoff = effectively bypassed
+
+      let gate;
+      if (gateAvailable) {
+        gate = new AudioWorkletNode(audioCtx, 'noise-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+      } else {
+        gate = audioCtx.createGain(); // transparent fallback when AudioWorklet isn't available
+      }
+
+      const comp = audioCtx.createDynamicsCompressor();
+      comp.threshold.value = 0;
+      comp.ratio.value = 1;
+      comp.knee.value = 0;
+      comp.attack.value = 0.003;
+      comp.release.value = 0.25;
+      const makeup = audioCtx.createGain();
+
+      const postSidechain = audioCtx.createGain();
+      if (sidechainAvailable) {
+        const idx = CHANNEL_INDEX[key];
+        makeup.connect(sidechainNode, 0, idx);
+        sidechainNode.connect(postSidechain, idx, 0);
+      } else {
+        makeup.connect(postSidechain);
+      }
+
+      const dry = audioCtx.createGain();
+      const delay = audioCtx.createDelay(2.5);
+      const feedback = audioCtx.createGain();
+      feedback.gain.value = 0;
+      const delayTone = audioCtx.createBiquadFilter();
+      delayTone.type = 'lowpass';
+      delayTone.frequency.value = 3500;
+      const wet = audioCtx.createGain();
+      wet.gain.value = 0;
+      const out = audioCtx.createGain();
+      const reverbSend = audioCtx.createGain();
+      reverbSend.gain.value = 0;
+      const routeGain = audioCtx.createGain();
+      const meter = audioCtx.createAnalyser();
+      meter.fftSize = 512;
+
+      trim.connect(highpass);
+      highpass.connect(gate);
+      gate.connect(comp);
+      comp.connect(makeup);
+
+      postSidechain.connect(dry);
+      postSidechain.connect(delay);
+      delay.connect(feedback);
+      feedback.connect(delayTone);
+      delayTone.connect(delay); // feedback loop = repeating echoes
+      delay.connect(wet);
+      dry.connect(out);
+      wet.connect(out);
+
+      out.connect(routeGain);
+      routeGain.connect(master);
+      routeGain.connect(reverbSend);
+      reverbSend.connect(reverbBus);
+      routeGain.connect(meter);
+
+      return { trim, highpass, gate, comp, makeup, dry, delay, feedback, wet, reverbSend, routeGain, meter, source: null, sourceStream: null };
+    }
+
+    function applyChannel(key) {
+      const c = channels[key];
+      if (!c) return;
+      const s = channelSettings[key];
+      const now = audioCtx.currentTime;
+      const ramp = (param, value) => param.setTargetAtTime(value, now, 0.02);
+
+      ramp(c.trim.gain, s.muted ? 0 : dbToLin(s.trimDb));
+      ramp(c.highpass.frequency, s.highpass ? 150 : 20);
+
+      if (gateAvailable) {
+        c.gate.port.postMessage({
+          thresholdDb: s.gateEnabled ? s.gateThreshold : -100,
+          attack: 0.005,
+          release: s.gateRelease / 1000,
+        });
+      }
+
+      ramp(c.comp.threshold, s.compEnabled ? s.compThreshold : 0);
+      ramp(c.comp.ratio, s.compEnabled ? s.compRatio : 1);
+      ramp(c.comp.attack, Math.max(0.001, s.compAttack / 1000));
+      ramp(c.comp.release, Math.max(0.01, s.compRelease / 1000));
+      ramp(c.makeup.gain, dbToLin(s.compEnabled ? s.compMakeup : 0));
+
+      const active = s.spatialType !== 'none';
+      ramp(c.delay.delayTime, Math.max(0.001, s.spatialTime / 1000));
+      ramp(c.feedback.gain, active ? (s.spatialFeedback / 100) * 0.9 : 0);
+      ramp(c.wet.gain, active ? s.spatialMix / 100 : 0);
+      ramp(c.reverbSend.gain, s.reverbSend / 100);
+      ramp(c.routeGain.gain, s.included ? 1 : 0);
+    }
+
+    function applySidechain() {
+      if (!sidechainAvailable) return;
+      const s = sidechainSettings;
+      sidechainNode.port.postMessage({
+        enabled: s.enabled,
+        direction: s.trigger === 'mic' ? 0 : 1,
+        mode: s.mode === 'gate' ? 1 : 0,
+        thresholdDb: s.threshold,
+        ratio: s.ratio,
+        depthDb: s.depth,
+        attack: s.attack / 1000,
+        release: s.release / 1000,
+        makeupDb: s.makeup,
+      });
+    }
+
+    let lastReverbSize = null;
+
+    function applyMaster() {
+      if (!audioCtx) return;
+      const s = masterSettings;
+      const now = audioCtx.currentTime;
+      master.gain.setTargetAtTime(dbToLin(s.gainDb), now, 0.02);
+      limiter.threshold.setTargetAtTime(s.limiter ? -3 : 0, now, 0.02);
+      limiter.ratio.setTargetAtTime(s.limiter ? 20 : 1, now, 0.02);
+      reverbReturn.gain.setTargetAtTime(s.reverbReturn / 100, now, 0.02);
+      monitorGain.gain.setTargetAtTime(s.monitor ? 1 : 0, now, 0.02);
+      // Only rebuild the impulse response when the size actually changed — this
+      // swaps the convolver's buffer, which would otherwise click/reset its
+      // tail on every unrelated master control (e.g. dragging the level).
+      if (s.reverbSize !== lastReverbSize) {
+        lastReverbSize = s.reverbSize;
+        reverbBus.buffer = createReverbImpulse(audioCtx, s.reverbSize);
+      }
+    }
+
+    async function init() {
+      if (readyPromise) return readyPromise;
+      readyPromise = (async () => {
+        audioCtx = new AudioContext();
+        destination = audioCtx.createMediaStreamDestination();
+        master = audioCtx.createGain();
+        limiter = audioCtx.createDynamicsCompressor();
+        limiter.knee.value = 6;
+        limiter.attack.value = 0.002;
+        limiter.release.value = 0.2;
+        monitorGain = audioCtx.createGain();
+        monitorGain.gain.value = 0;
+        reverbBus = audioCtx.createConvolver();
+        reverbBus.normalize = true;
+        reverbReturn = audioCtx.createGain();
+        masterMeter = audioCtx.createAnalyser();
+        masterMeter.fftSize = 512;
+
+        master.connect(limiter);
+        limiter.connect(destination);
+        limiter.connect(monitorGain);
+        limiter.connect(masterMeter);
+        monitorGain.connect(audioCtx.destination);
+        reverbBus.connect(reverbReturn);
+        reverbReturn.connect(master);
+
+        try {
+          await audioCtx.audioWorklet.addModule(new URL(WORKLET_URL, document.baseURI).href);
+          gateAvailable = true;
+          sidechainAvailable = true;
+          sidechainNode = new AudioWorkletNode(audioCtx, 'sidechain', {
+            numberOfInputs: 2, numberOfOutputs: 2, outputChannelCount: [2, 2],
+          });
+        } catch (err) {
+          console.warn('Audio worklets unavailable; noise gate and sidechain are disabled.', err);
+        }
+
+        channels.mic = makeChannel('mic');
+        channels.system = makeChannel('system');
+        applyChannel('mic');
+        applyChannel('system');
+        applySidechain();
+        applyMaster();
+      })();
+      return readyPromise;
+    }
+
+    function connectSource(key, stream) {
+      const c = channels[key];
+      if (!c || c.sourceStream === stream) return;
+      c.sourceStream = stream || null;
+      if (c.source) {
+        c.source.disconnect();
+        c.source = null;
+      }
+      if (stream && stream.getAudioTracks().length) {
+        c.source = audioCtx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+        c.source.connect(c.trim);
+      }
+    }
+
+    function syncSources() {
+      if (!audioCtx) return;
+      connectSource('mic', els.micEnabled.checked ? state.mic : null);
+      const screenHasAudio = state.screen && state.screen.getAudioTracks().length > 0;
+      connectSource('system', els.systemAudio.checked && needsScreen() && screenHasAudio ? state.screen : null);
+    }
+
+    return {
+      init,
+      syncSources,
+      isReady: () => Boolean(audioCtx),
+      resume: () => audioCtx && audioCtx.state === 'suspended' && audioCtx.resume(),
+      getDestinationStream: () => destination.stream,
+      updateChannel(key, patch) {
+        Object.assign(channelSettings[key], patch);
+        applyChannel(key);
+      },
+      updateSidechain(patch) {
+        Object.assign(sidechainSettings, patch);
+        applySidechain();
+      },
+      updateMaster(patch) {
+        Object.assign(masterSettings, patch);
+        applyMaster();
+      },
+      getChannelLevel: (key) => readLevel(channels[key] && channels[key].meter),
+      getMasterLevel: () => readLevel(masterMeter),
+    };
+  })();
+
+  /* ------------------------------------------------------------------------
+   * Audio mixer UI — a channel strip template (used for both Microphone and
+   * System audio), plus the Sidechain and Master panels.
+   * --------------------------------------------------------------------- */
+
+  const fmtDb = (v) => `${v > 0 ? '+' : ''}${v} dB`;
+  const fmtMs = (v) => `${v} ms`;
+  const fmtPct = (v) => `${v}%`;
+  const fmtRatio = (v) => `${v}:1`;
+
+  function wireRange(input, label, fmt, onChange) {
+    const update = () => {
+      const v = Number(input.value);
+      if (label) label.textContent = fmt(v);
+      onChange(v);
+    };
+    input.addEventListener('input', update);
+    update();
   }
 
-  function connectAudio(key, stream) {
-    const current = audio.nodes[key];
-    if (current && current.stream === stream) return;
-    if (current) {
-      current.node.disconnect();
-      delete audio.nodes[key];
-    }
-    if (stream) {
-      const node = audio.ctx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
-      node.connect(audio.dest);
-      audio.nodes[key] = { stream, node };
-    }
+  function wireToggle(input, onChange) {
+    input.addEventListener('change', () => onChange(input.checked));
+    onChange(input.checked);
+  }
+
+  function wireSelect(input, onChange) {
+    input.addEventListener('change', () => onChange(input.value));
+    onChange(input.value);
+  }
+
+  // One field per CHANNEL_DEFAULTS key (minus "muted", which the mute chip
+  // button handles directly). Reused for both the Microphone and System
+  // audio channel strips — see channelStripTemplate().
+  const CHANNEL_FIELDS = [
+    ['trimDb', 'range', fmtDb],
+    ['compEnabled', 'toggle'],
+    ['compThreshold', 'range', fmtDb],
+    ['compRatio', 'range', fmtRatio],
+    ['compAttack', 'range', fmtMs],
+    ['compRelease', 'range', fmtMs],
+    ['compMakeup', 'range', fmtDb],
+    ['highpass', 'toggle'],
+    ['gateEnabled', 'toggle'],
+    ['gateThreshold', 'range', fmtDb],
+    ['gateRelease', 'range', fmtMs],
+    ['spatialType', 'select'],
+    ['spatialTime', 'range', fmtMs],
+    ['spatialFeedback', 'range', fmtPct],
+    ['spatialMix', 'range', fmtPct],
+    ['reverbSend', 'range', fmtPct],
+    ['included', 'toggle'],
+  ];
+
+  function channelStripTemplate(title) {
+    return `
+      <header class="channel-head">
+        <strong>${title}</strong>
+        <span class="meter" aria-hidden="true"><span class="meter-fill" data-ctl="meter"></span></span>
+        <button type="button" class="chip" data-ctl="muted" aria-pressed="false">Mute</button>
+      </header>
+      <div class="row"><label>Trim</label><input type="range" data-ctl="trimDb" min="-24" max="24" value="0" step="1"><span class="val" data-ctl="trimDbVal"></span></div>
+
+      <details open>
+        <summary>Dynamics processing</summary>
+        <label class="toggle"><input type="checkbox" data-ctl="compEnabled"><span>Compressor</span></label>
+        <div class="row"><label>Threshold</label><input type="range" data-ctl="compThreshold" min="-60" max="0" value="-24"><span class="val" data-ctl="compThresholdVal"></span></div>
+        <div class="row"><label>Ratio</label><input type="range" data-ctl="compRatio" min="1" max="20" value="3" step="0.5"><span class="val" data-ctl="compRatioVal"></span></div>
+        <div class="row"><label>Attack</label><input type="range" data-ctl="compAttack" min="0" max="100" value="10"><span class="val" data-ctl="compAttackVal"></span></div>
+        <div class="row"><label>Release</label><input type="range" data-ctl="compRelease" min="10" max="1000" value="150"><span class="val" data-ctl="compReleaseVal"></span></div>
+        <div class="row"><label>Makeup</label><input type="range" data-ctl="compMakeup" min="0" max="24" value="0"><span class="val" data-ctl="compMakeupVal"></span></div>
+      </details>
+
+      <details>
+        <summary>Noise control</summary>
+        <label class="toggle"><input type="checkbox" data-ctl="highpass"><span>Remove low rumble</span></label>
+        <label class="toggle"><input type="checkbox" data-ctl="gateEnabled"><span>Noise gate</span></label>
+        <div class="row"><label>Threshold</label><input type="range" data-ctl="gateThreshold" min="-80" max="-10" value="-45"><span class="val" data-ctl="gateThresholdVal"></span></div>
+        <div class="row"><label>Release</label><input type="range" data-ctl="gateRelease" min="20" max="1000" value="150"><span class="val" data-ctl="gateReleaseVal"></span></div>
+      </details>
+
+      <details>
+        <summary>Spatial effects</summary>
+        <div class="row"><label>Insert</label>
+          <select data-ctl="spatialType">
+            <option value="none">None</option>
+            <option value="delay">Delay</option>
+            <option value="echo">Echo</option>
+          </select>
+        </div>
+        <div class="row"><label>Time</label><input type="range" data-ctl="spatialTime" min="20" max="1000" value="250"><span class="val" data-ctl="spatialTimeVal"></span></div>
+        <div class="row"><label>Feedback</label><input type="range" data-ctl="spatialFeedback" min="0" max="90" value="25"><span class="val" data-ctl="spatialFeedbackVal"></span></div>
+        <div class="row"><label>Mix</label><input type="range" data-ctl="spatialMix" min="0" max="100" value="25"><span class="val" data-ctl="spatialMixVal"></span></div>
+        <div class="row"><label>Reverb send</label><input type="range" data-ctl="reverbSend" min="0" max="100" value="0"><span class="val" data-ctl="reverbSendVal"></span></div>
+      </details>
+
+      <details>
+        <summary>Routing</summary>
+        <label class="toggle"><input type="checkbox" data-ctl="included" checked><span>Include in the mix</span></label>
+      </details>
+    `;
+  }
+
+  // Delay and Echo are the same effect under the hood (a feedback delay);
+  // picking one just loads sensible starting numbers, still adjustable after.
+  function applySpatialPreset(container, type) {
+    const preset = type === 'echo'
+      ? { spatialTime: 450, spatialFeedback: 45, spatialMix: 35 }
+      : { spatialTime: 250, spatialFeedback: 15, spatialMix: 20 };
+    Object.entries(preset).forEach(([prop, value]) => {
+      const input = container.querySelector(`[data-ctl="${prop}"]`);
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+    });
+  }
+
+  function wireChannelStrip(key, container, title) {
+    container.innerHTML = channelStripTemplate(title);
+    const mute = container.querySelector('[data-ctl="muted"]');
+    mute.addEventListener('click', () => {
+      const on = mute.getAttribute('aria-pressed') !== 'true';
+      mute.setAttribute('aria-pressed', String(on));
+      mixer.updateChannel(key, { muted: on });
+    });
+    CHANNEL_FIELDS.forEach(([prop, kind, fmt]) => {
+      const input = container.querySelector(`[data-ctl="${prop}"]`);
+      if (kind === 'range') {
+        wireRange(input, container.querySelector(`[data-ctl="${prop}Val"]`), fmt, (v) => mixer.updateChannel(key, { [prop]: v }));
+      } else if (kind === 'toggle') {
+        wireToggle(input, (on) => mixer.updateChannel(key, { [prop]: on }));
+      } else {
+        wireSelect(input, (v) => {
+          mixer.updateChannel(key, { [prop]: v });
+          if (prop === 'spatialType' && v !== 'none') applySpatialPreset(container, v);
+        });
+      }
+    });
+  }
+
+  function wireSidechainPanel() {
+    wireToggle(els.scEnabled, (on) => mixer.updateSidechain({ enabled: on }));
+    wireSelect(els.scTrigger, (v) => mixer.updateSidechain({ trigger: v }));
+    wireSelect(els.scMode, (v) => {
+      mixer.updateSidechain({ mode: v });
+      els.scRatioRow.hidden = v === 'gate';
+      els.scDepthRow.hidden = v !== 'gate';
+    });
+    wireRange(els.scThreshold, els.scThresholdVal, fmtDb, (v) => mixer.updateSidechain({ threshold: v }));
+    wireRange(els.scRatio, els.scRatioVal, fmtRatio, (v) => mixer.updateSidechain({ ratio: v }));
+    wireRange(els.scDepth, els.scDepthVal, fmtDb, (v) => mixer.updateSidechain({ depth: v }));
+    wireRange(els.scAttack, els.scAttackVal, fmtMs, (v) => mixer.updateSidechain({ attack: v }));
+    wireRange(els.scRelease, els.scReleaseVal, fmtMs, (v) => mixer.updateSidechain({ release: v }));
+    wireRange(els.scMakeup, els.scMakeupVal, fmtDb, (v) => mixer.updateSidechain({ makeup: v }));
+  }
+
+  function wireMasterPanel() {
+    wireRange(els.masterGain, els.masterGainVal, fmtDb, (v) => mixer.updateMaster({ gainDb: v }));
+    wireToggle(els.masterLimiter, (on) => mixer.updateMaster({ limiter: on }));
+    wireRange(els.reverbReturn, els.reverbReturnVal, fmtPct, (v) => mixer.updateMaster({ reverbReturn: v }));
+    wireRange(els.reverbSize, els.reverbSizeVal, fmtPct, (v) => mixer.updateMaster({ reverbSize: v }));
+    wireToggle(els.monitorEnabled, (on) => mixer.updateMaster({ monitor: on }));
+  }
+
+  function setMeterFill(container, level) {
+    const fill = container && container.querySelector('[data-ctl="meter"]');
+    if (fill) fill.style.width = `${level * 100}%`;
+  }
+
+  function startMeterLoop() {
+    setInterval(() => {
+      if (!mixer.isReady()) return;
+      setMeterFill(els.channelMic, mixer.getChannelLevel('mic'));
+      setMeterFill(els.channelSystem, mixer.getChannelLevel('system'));
+      els.masterMeterFill.style.width = `${mixer.getMasterLevel() * 100}%`;
+    }, 100);
+  }
+
+  function wireTabs() {
+    els.tabButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        els.tabButtons.forEach((b) => b.setAttribute('aria-selected', String(b === button)));
+        els.tabPanels.forEach((panel) => {
+          panel.hidden = panel.dataset.tabPanel !== button.dataset.tab;
+        });
+        if (button.dataset.tab === 'audio') activateAudioPreview();
+      });
+    });
   }
 
   /* ------------------------------------------------------------------------
@@ -693,15 +1207,14 @@
       return;
     }
 
-    setupAudio();
-    if (els.micEnabled.checked) await ensureMic();
+    await activateAudioPreview();
 
     const format = selectedFormat();
     const pixels = els.canvas.width * els.canvas.height;
     const canvasStream = els.canvas.captureStream(FPS);
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
-      ...audio.dest.stream.getAudioTracks(),
+      ...mixer.getDestinationStream().getAudioTracks(),
     ]);
 
     let recorder;
@@ -729,7 +1242,6 @@
     });
     recorder.start(1000);
     state.recording = rec;
-    syncAudio();
     updateUI();
   }
 
@@ -786,7 +1298,6 @@
     updateUI();
     const [, choice] = await Promise.all([stopped, picked]);
     rec.canvasStream.getTracks().forEach((track) => track.stop());
-    stopMic();
     releaseUnusedSources();
 
     const blob = new Blob(rec.chunks, { type: rec.format.type });
@@ -919,7 +1430,7 @@
     updateUI();
     await ensureSourcesForMode();
     releaseUnusedSources();
-    syncAudio();
+    mixer.syncSources();
     updateUI();
   }
 
@@ -1141,16 +1652,17 @@
     });
 
     els.micEnabled.addEventListener('change', async () => {
-      if (state.recording && els.micEnabled.checked) await ensureMic();
-      syncAudio();
+      if (els.micEnabled.checked) await activateAudioPreview();
+      else stopMic();
+      mixer.syncSources();
     });
     els.micSelect.addEventListener('change', async () => {
       if (!state.mic) return;
       stopMic();
-      if (state.recording && els.micEnabled.checked) await ensureMic();
-      syncAudio();
+      if (els.micEnabled.checked) await ensureMic();
+      mixer.syncSources();
     });
-    els.systemAudio.addEventListener('change', syncAudio);
+    els.systemAudio.addEventListener('change', () => mixer.syncSources());
 
     els.resolution.addEventListener('change', () => {
       const [w, h] = els.resolution.value.split('x').map(Number);
@@ -1215,6 +1727,12 @@
     loadBackgroundList();
     refreshDevices();
     startRenderClock();
+    wireChannelStrip('mic', els.channelMic, 'Microphone');
+    wireChannelStrip('system', els.channelSystem, 'System / screen audio');
+    wireSidechainPanel();
+    wireMasterPanel();
+    wireTabs();
+    startMeterLoop();
     updateUI();
     ensureCamera().then(updateUI);
   }
