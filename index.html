@@ -268,10 +268,16 @@
         <button type="button" class="btn btn-small" id="btnAddFiles">Add files…</button>
 
         <div class="file-active-bar" id="fileActiveBar" hidden>
-          <button type="button" class="btn btn-page" id="btnPrevPage" aria-label="Previous page">‹</button>
-          <span id="fileActiveLabel" class="file-active-label"></span>
-          <button type="button" class="btn btn-page" id="btnNextPage" aria-label="Next page">›</button>
-          <button type="button" class="btn btn-small" id="btnStopFile">Stop showing</button>
+          <div class="file-active-row">
+            <span id="fileActiveLabel" class="file-active-label"></span>
+            <button type="button" class="btn btn-small" id="btnStopFile">Stop showing</button>
+          </div>
+          <div class="file-page-row" id="filePageRow" hidden>
+            <button type="button" class="btn btn-page" id="btnPrevPage" aria-label="Previous page">‹</button>
+            <input type="range" id="filePageSlider" min="1" max="1" value="1" aria-label="Jump to page">
+            <span id="filePageCount" class="val">1 / 1</span>
+            <button type="button" class="btn btn-page" id="btnNextPage" aria-label="Next page">›</button>
+          </div>
         </div>
 
         <ul class="file-list" id="fileList"></ul>

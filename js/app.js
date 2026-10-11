@@ -79,6 +79,9 @@
     btnAddFiles: $('#btnAddFiles'),
     fileActiveBar: $('#fileActiveBar'),
     fileActiveLabel: $('#fileActiveLabel'),
+    filePageRow: $('#filePageRow'),
+    filePageSlider: $('#filePageSlider'),
+    filePageCount: $('#filePageCount'),
     btnPrevPage: $('#btnPrevPage'),
     btnNextPage: $('#btnNextPage'),
     btnStopFile: $('#btnStopFile'),
@@ -1513,6 +1516,14 @@
         activePage = (activePage - 1 + entry.pageCount) % entry.pageCount;
         notify();
       },
+      goToPage(index) {
+        const entry = library.find((e) => e.id === activeId);
+        if (!entry) return;
+        const clamped = Math.max(0, Math.min(entry.pageCount - 1, index));
+        if (clamped === activePage) return;
+        activePage = clamped;
+        notify();
+      },
       getCurrentCanvas() {
         const entry = library.find((e) => e.id === activeId);
         if (!entry || entry.status !== 'ready') return null;
@@ -1561,12 +1572,15 @@
     els.fileActiveBar.hidden = !showingFile;
     if (showingFile) {
       const page = fileSource.getActivePage();
-      els.fileActiveLabel.textContent = active.pageCount > 1
-        ? `${active.name} — page ${page + 1} of ${active.pageCount}`
-        : active.name;
-      const noPaging = active.pageCount < 2;
-      els.btnPrevPage.disabled = noPaging;
-      els.btnNextPage.disabled = noPaging;
+      const hasPages = active.pageCount > 1;
+      els.fileActiveLabel.textContent = active.name;
+      els.filePageRow.hidden = !hasPages;
+      if (hasPages) {
+        els.filePageSlider.min = '1';
+        els.filePageSlider.max = String(active.pageCount);
+        els.filePageSlider.value = String(page + 1);
+        els.filePageCount.textContent = `${page + 1} / ${active.pageCount}`;
+      }
     }
     updateUI(); // also refreshes the overlay
   }
@@ -2648,6 +2662,7 @@
     });
     els.btnPrevPage.addEventListener('click', () => fileSource.prevPage());
     els.btnNextPage.addEventListener('click', () => fileSource.nextPage());
+    els.filePageSlider.addEventListener('input', () => fileSource.goToPage(Number(els.filePageSlider.value) - 1));
     els.btnStopFile.addEventListener('click', () => fileSource.showLive());
 
     els.micEnabled.addEventListener('change', async () => {

@@ -117,7 +117,7 @@ Open the **Files** tab and click **Add files…** to add any mix of:
 - **Excel** — `.xlsx`
 - **HTML** pages
 
-Pick one from the list and it fills the same slot a shared screen would — switch the **Source** to **Screen** or **Screen + Webcam** to see it on the stage (picking a file while on **Webcam** switches you to **Screen** automatically). A file with several pages/slides/sheets gets **‹ ›** page controls. Click **Stop showing** to go back to a live shared screen. You can keep adding and switching between files, including mid-recording.
+Pick one from the list and it fills the same slot a shared screen would — switch the **Source** to **Screen** or **Screen + Webcam** to see it on the stage (picking a file while on **Webcam** switches you to **Screen** automatically). A file with several pages/slides/sheets shows its page count and a slider underneath its name — drag it to jump straight to any page, or use the **‹ ›** buttons to step one at a time. Click **Stop showing** to go back to a live shared screen. You can keep adding and switching between files, including mid-recording.
 
 **Fidelity:** PDFs and images render pixel-for-pixel like the original — PDF rendering uses [pdf.js](https://mozilla.github.io/pdf.js/), the same engine behind Firefox's built-in PDF viewer. PowerPoint, Word and Excel are a different story: there is no pixel-perfect way to render those formats in a browser without a server to convert them first, and this project has no server. So instead you get an honest, readable stand-in:
 
