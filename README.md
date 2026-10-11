@@ -163,7 +163,7 @@ Smooth skin and the AR filters share the same face-tracking model (loaded once, 
 
 ## Sound mixer
 
-Switch the side panel from **Video** to **Sound** for a small mixing console. It's live as soon as you open the tab (even before you hit Record), so you can dial everything in while watching the level meters, and keep adjusting it mid-recording.
+The mixing console sits under the video stage, always visible (not behind a tab) — it's live from the moment the page loads, so you can dial everything in while watching the level meters before you ever hit Record, and keep adjusting it mid-recording. The side panel's tabs (**Video** / **Files**) are for the video-specific and file-related settings only.
 
 Each of **Microphone** and **System / screen audio** gets its own channel strip:
 

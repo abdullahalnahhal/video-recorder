@@ -201,6 +201,7 @@ input {
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
+  align-items: start;
   gap: 20px;
   max-width: 1600px;
   margin: 0 auto;
@@ -378,6 +379,27 @@ input {
   font-size: 13px;
 }
 
+/* Sound — sits under the video stage, full stage width, its panels laid
+   out in a responsive grid rather than the single narrow column the
+   sidebar tabs use. */
+
+.sound-section {
+  margin-top: 28px;
+}
+
+.sound-section-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -549,7 +571,7 @@ input[type="range"] {
 }
 
 .tabs {
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   margin-bottom: 14px;
 }
 

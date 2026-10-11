@@ -2175,7 +2175,6 @@
         els.tabPanels.forEach((panel) => {
           panel.hidden = panel.dataset.tabPanel !== button.dataset.tab;
         });
-        if (button.dataset.tab === 'audio') activateAudioPreview();
       });
     });
   }
@@ -2846,6 +2845,9 @@
     renderFileList();
     updateUI();
     ensureCamera().then(updateUI);
+    // The sound panel is always visible now (not behind a tab), so bring the
+    // mixer online right away too, same as the webcam.
+    activateAudioPreview();
   }
 
   init();
