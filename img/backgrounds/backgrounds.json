@@ -1,0 +1,8 @@
+[
+  { "name": "Mountains", "file": "mountains.jpg" },
+  { "name": "Beach", "file": "beach.jpg" },
+  { "name": "Forest", "file": "forest.jpg" },
+  { "name": "Bokeh lights", "file": "bokeh-lights.jpg" },
+  { "name": "Abstract waves", "file": "abstract-waves.jpg" },
+  { "name": "Studio", "file": "studio.jpg" }
+]

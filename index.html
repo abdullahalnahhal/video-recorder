@@ -1,0 +1,173 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Recorder — Webcam &amp; Screen</title>
+  <link rel="stylesheet" href="css/style.css">
+  <meta name="description" content="Record your webcam, your screen, or both, with backgrounds and video effects.">
+
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.png">
+
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#111318">
+</head>
+
+<body>
+
+  <header class="topbar">
+    <h1 class="brand"><span class="brand-dot"></span> Video Recorder</h1>
+    <div class="rec-status" id="recStatus" data-state="idle">
+      <span class="rec-status-dot"></span>
+      <span id="recStatusText">Ready</span>
+      <span class="rec-timer" id="recTimer">00:00</span>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <section class="stage-col">
+      <div class="stage" id="stage">
+        <canvas id="output" width="1920" height="1080"></canvas>
+        <div class="stage-overlay" id="stageOverlay" hidden>
+          <div class="spinner" id="stageSpinner" hidden></div>
+          <p id="stageMessage"></p>
+          <button type="button" class="btn btn-primary" id="stageAction" hidden></button>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button type="button" class="btn btn-record" id="btnStart">
+          <span class="icon-rec"></span> Start recording
+        </button>
+        <button type="button" class="btn" id="btnPause" disabled>Pause</button>
+        <button type="button" class="btn btn-stop" id="btnStop" disabled>
+          <span class="icon-stop"></span> Stop &amp; save
+        </button>
+        <p class="hint" id="hint">When you stop, a “Save as” window opens so you can choose where to save the video.</p>
+      </div>
+    </section>
+
+    <aside class="panel-col">
+
+      <section class="panel">
+        <h2>Source</h2>
+        <div class="segmented" role="radiogroup" aria-label="Recording source" id="modeGroup">
+          <button type="button" role="radio" data-mode="webcam" aria-checked="true">Webcam</button>
+          <button type="button" role="radio" data-mode="screen" aria-checked="false">Screen</button>
+          <button type="button" role="radio" data-mode="both" aria-checked="false">Screen + Webcam</button>
+        </div>
+        <div class="row">
+          <label for="cameraSelect">Camera</label>
+          <select id="cameraSelect"></select>
+        </div>
+        <button type="button" class="btn btn-small" id="btnChangeScreen" hidden>Choose a different screen</button>
+      </section>
+
+      <section class="panel" id="pipPanel" hidden>
+        <h2>Webcam overlay</h2>
+        <div class="row">
+          <span class="label">Corner</span>
+          <div class="corner-picker" role="radiogroup" aria-label="Webcam corner" id="cornerGroup">
+            <button type="button" role="radio" data-corner="tl" aria-checked="false" title="Top left"></button>
+            <button type="button" role="radio" data-corner="tr" aria-checked="false" title="Top right"></button>
+            <button type="button" role="radio" data-corner="bl" aria-checked="false" title="Bottom left"></button>
+            <button type="button" role="radio" data-corner="br" aria-checked="true" title="Bottom right"></button>
+          </div>
+        </div>
+        <div class="row">
+          <label for="pipSize">Size</label>
+          <input type="range" id="pipSize" min="12" max="40" value="22">
+        </div>
+        <div class="row">
+          <label for="pipShape">Shape</label>
+          <select id="pipShape">
+            <option value="rounded">Rounded rectangle</option>
+            <option value="circle">Circle</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="panel" id="effectsPanel">
+        <h2>Webcam effects</h2>
+        <div class="chips" id="effectGroup">
+          <button type="button" class="chip" data-effect="blur" aria-pressed="false">Blur</button>
+          <button type="button" class="chip" data-effect="grayscale" aria-pressed="false">Black &amp; white</button>
+          <button type="button" class="chip" data-effect="contrast" aria-pressed="false">High contrast</button>
+        </div>
+        <div class="row" id="blurRow" hidden>
+          <label for="blurAmount">Blur amount</label>
+          <input type="range" id="blurAmount" min="2" max="30" value="10">
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="mirror" checked>
+          <span>Mirror webcam</span>
+        </label>
+      </section>
+
+      <section class="panel" id="bgPanel">
+        <h2>Webcam background</h2>
+        <div class="bg-grid" id="bgGrid" role="radiogroup" aria-label="Background">
+          <button type="button" class="bg-item bg-none" role="radio" data-bg="none" aria-checked="true">None</button>
+          <button type="button" class="bg-item bg-blur" role="radio" data-bg="blur" aria-checked="false">Blur</button>
+        </div>
+        <p class="note" id="bgNote"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Audio</h2>
+        <label class="toggle">
+          <input type="checkbox" id="micEnabled" checked>
+          <span>Microphone</span>
+        </label>
+        <div class="row">
+          <label for="micSelect">Mic</label>
+          <select id="micSelect"></select>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="systemAudio" checked>
+          <span>Screen / tab audio (when sharing)</span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>Output</h2>
+        <div class="row">
+          <label for="resolution">Resolution</label>
+          <select id="resolution">
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="1280x720">720p (1280×720)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="format">Format</label>
+          <select id="format"></select>
+        </div>
+      </section>
+
+    </aside>
+  </main>
+
+  <dialog class="modal" id="resultDialog">
+    <form method="dialog" class="modal-body">
+      <h2>Recording finished</h2>
+      <video id="resultVideo" controls playsinline></video>
+      <p class="result-info" id="resultInfo"></p>
+      <p class="result-msg" id="resultMsg"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="btnDiscard">Discard</button>
+        <button type="button" class="btn btn-primary" id="btnSaveAs">Save as…</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="js/app.js"></script>
+
+</body>
+
+</html>
