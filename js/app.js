@@ -1119,8 +1119,17 @@
    * README's "Files & images" section.
    * --------------------------------------------------------------------- */
 
-  const MAX_FILE_PAGES = 200;
   const MAX_FILE_BYTES = 150 * 1024 * 1024; // 150 MB
+
+  // Wraps an old-style "render everything up front" function (returns an
+  // array of canvases) as a loader — used for formats where that's cheap
+  // (one page, or close to it): images, HTML and DOCX.
+  function eagerLoader(renderAll) {
+    return async (file) => {
+      const pages = await renderAll(file);
+      return { pageCount: pages.length, getPage: async (index) => pages[index] };
+    };
+  }
 
   // Lazily loads a plain UMD script and returns its global, caching the
   // promise so concurrent/later requests for the same script share it.
@@ -1170,25 +1179,32 @@
     return [canvas];
   }
 
-  async function renderPdfFile(file) {
+  // Rendering every page of a PDF up front doesn't scale — a several-hundred
+  // page document would take a long time and a lot of memory before you ever
+  // see it. Instead, only the page count is known right away; each page is
+  // rendered (and cached) the first time it's actually viewed.
+  async function createPdfLoader(file) {
     const pdfjsLib = await loadPdfJs();
     const buffer = await file.arrayBuffer();
     const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
-    const pageCount = Math.min(doc.numPages, MAX_FILE_PAGES);
-    const pages = [];
-    for (let i = 1; i <= pageCount; i++) {
-      const page = await doc.getPage(i);
-      const base = page.getViewport({ scale: 1 });
-      // Render at a decent fixed resolution regardless of the PDF's own page size.
-      const scale = Math.min(2200 / base.width, 2200 / base.height, 3);
-      const viewport = page.getViewport({ scale: Math.max(scale, 1) });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      pages.push(canvas);
-    }
-    return pages;
+    const cache = new Map();
+    return {
+      pageCount: doc.numPages,
+      async getPage(index) {
+        if (cache.has(index)) return cache.get(index);
+        const page = await doc.getPage(index + 1);
+        const base = page.getViewport({ scale: 1 });
+        // Render at a decent fixed resolution regardless of the PDF's own page size.
+        const scale = Math.min(2200 / base.width, 2200 / base.height, 3);
+        const viewport = page.getViewport({ scale: Math.max(scale, 1) });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        cache.set(index, canvas);
+        return canvas;
+      },
+    };
   }
 
   // A simple left-aligned word wrap, used for both slide titles and bullets.
@@ -1256,44 +1272,55 @@
     return decodeURIComponent(new URL(relative, `file:///${base}`).pathname).replace(/^\//, '');
   }
 
-  async function renderPptxFile(file) {
+  async function renderPptxSlide(zip, parser, name) {
+    const xml = await zip.files[name].async('text');
+    const slideDoc = parser.parseFromString(xml, 'application/xml');
+    const lines = Array.from(slideDoc.getElementsByTagNameNS('*', 't'))
+      .map((node) => node.textContent.trim())
+      .filter(Boolean);
+
+    let imageBitmap = null;
+    const relsName = name.replace('slides/', 'slides/_rels/') + '.rels';
+    const relsFile = zip.files[relsName];
+    if (relsFile) {
+      const relsXml = await relsFile.async('text');
+      const relsDoc = parser.parseFromString(relsXml, 'application/xml');
+      const imageRel = Array.from(relsDoc.getElementsByTagName('Relationship'))
+        .find((rel) => /image/i.test(rel.getAttribute('Type') || ''));
+      if (imageRel) {
+        const mediaPath = resolveZipPath(name, imageRel.getAttribute('Target'));
+        const mediaFile = zip.files[mediaPath];
+        if (mediaFile) {
+          const blob = await mediaFile.async('blob');
+          imageBitmap = await createImageBitmap(blob).catch(() => null);
+        }
+      }
+    }
+    return renderSlideCanvas(lines, imageBitmap);
+  }
+
+  // Slides are cheap to render (text + at most one picture), but a deck can
+  // still have hundreds of them — load lazily anyway, same as PDF, so adding
+  // a huge deck doesn't stall on slides you may never flip to.
+  async function createPptxLoader(file) {
     const JSZip = await loadJSZip();
     const zip = await JSZip.loadAsync(file);
     const slideNames = Object.keys(zip.files)
       .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
-      .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]))
-      .slice(0, MAX_FILE_PAGES);
+      .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]));
     if (!slideNames.length) throw new Error('No slides were found in this file.');
 
     const parser = new DOMParser();
-    const pages = [];
-    for (const name of slideNames) {
-      const xml = await zip.files[name].async('text');
-      const slideDoc = parser.parseFromString(xml, 'application/xml');
-      const lines = Array.from(slideDoc.getElementsByTagNameNS('*', 't'))
-        .map((node) => node.textContent.trim())
-        .filter(Boolean);
-
-      let imageBitmap = null;
-      const relsName = name.replace('slides/', 'slides/_rels/') + '.rels';
-      const relsFile = zip.files[relsName];
-      if (relsFile) {
-        const relsXml = await relsFile.async('text');
-        const relsDoc = parser.parseFromString(relsXml, 'application/xml');
-        const imageRel = Array.from(relsDoc.getElementsByTagName('Relationship'))
-          .find((rel) => /image/i.test(rel.getAttribute('Type') || ''));
-        if (imageRel) {
-          const mediaPath = resolveZipPath(name, imageRel.getAttribute('Target'));
-          const mediaFile = zip.files[mediaPath];
-          if (mediaFile) {
-            const blob = await mediaFile.async('blob');
-            imageBitmap = await createImageBitmap(blob).catch(() => null);
-          }
-        }
-      }
-      pages.push(renderSlideCanvas(lines, imageBitmap));
-    }
-    return pages;
+    const cache = new Map();
+    return {
+      pageCount: slideNames.length,
+      async getPage(index) {
+        if (cache.has(index)) return cache.get(index);
+        const canvas = await renderPptxSlide(zip, parser, slideNames[index]);
+        cache.set(index, canvas);
+        return canvas;
+      },
+    };
   }
 
   // Renders an HTML string by loading it into a sandboxed, off-screen iframe
@@ -1400,16 +1427,23 @@
     return canvas;
   }
 
-  async function renderXlsxFile(file) {
+  async function createXlsxLoader(file) {
     const XLSX = await loadXlsx();
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: 'array' });
-    const sheetNames = workbook.SheetNames.slice(0, MAX_FILE_PAGES);
+    const sheetNames = workbook.SheetNames;
     if (!sheetNames.length) throw new Error('No sheets were found in this file.');
-    return sheetNames.map((name) => {
-      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '', raw: false });
-      return renderSheetCanvas(name, rows);
-    });
+    const cache = new Map();
+    return {
+      pageCount: sheetNames.length,
+      async getPage(index) {
+        if (cache.has(index)) return cache.get(index);
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetNames[index]], { header: 1, defval: '', raw: false });
+        const canvas = renderSheetCanvas(sheetNames[index], rows);
+        cache.set(index, canvas);
+        return canvas;
+      },
+    };
   }
 
   const FILE_KIND_BY_EXT = {
@@ -1420,8 +1454,16 @@
   const FILE_KIND_LABEL = {
     image: 'Image', pdf: 'PDF', pptx: 'Slides', docx: 'Document', xlsx: 'Sheet', html: 'Web page', legacy: 'Legacy Office', unknown: 'File',
   };
-  const FILE_RENDERERS = {
-    image: renderImageFile, pdf: renderPdfFile, pptx: renderPptxFile, docx: renderDocxFile, xlsx: renderXlsxFile, html: renderHtmlFile,
+  // Each loader resolves to { pageCount, getPage(index) } — getPage renders
+  // (and should cache) that page on demand, so adding a file is only ever as
+  // slow as reading its structure, never as slow as rendering all of it.
+  const FILE_LOADERS = {
+    image: eagerLoader(renderImageFile),
+    html: eagerLoader(renderHtmlFile),
+    docx: eagerLoader(renderDocxFile),
+    pdf: createPdfLoader,
+    pptx: createPptxLoader,
+    xlsx: createXlsxLoader,
   };
 
   function fileKind(file) {
@@ -1437,8 +1479,31 @@
     let nextId = 1;
     let onChange = null;
 
+    // The page actually drawn each frame. Rendering a page is async (lazy),
+    // so this is filled in once it's ready rather than looked up live —
+    // render() just gets null (draws nothing that frame) until it is. Kept
+    // as the *previous* page's canvas across a page change rather than
+    // cleared immediately, so flipping pages doesn't flash blank.
+    let currentPageCanvas = null;
+    let currentPageRequest = 0;
+
     function notify() {
       if (onChange) onChange();
+    }
+
+    function loadCurrentPage() {
+      const entry = library.find((e) => e.id === activeId);
+      if (!entry || entry.status !== 'ready') {
+        currentPageCanvas = null;
+        return;
+      }
+      const myRequest = ++currentPageRequest;
+      entry.getPage(activePage).then((canvas) => {
+        if (myRequest === currentPageRequest) currentPageCanvas = canvas;
+      }).catch((err) => {
+        console.error(err);
+        if (myRequest === currentPageRequest) currentPageCanvas = null;
+      });
     }
 
     async function process(entry) {
@@ -1448,13 +1513,14 @@
         if (entry.kind === 'legacy') {
           throw new Error('This is an older Office format. Save/export it as .docx, .pptx or .xlsx and add it again.');
         }
-        const renderer = FILE_RENDERERS[entry.kind];
-        if (!renderer) throw new Error("This file type isn't supported.");
-        const pages = await renderer(entry.file);
-        if (!pages || !pages.length) throw new Error('No content could be shown for this file.');
-        entry.pages = pages;
-        entry.pageCount = pages.length;
+        const loader = FILE_LOADERS[entry.kind];
+        if (!loader) throw new Error("This file type isn't supported.");
+        const { pageCount, getPage } = await loader(entry.file);
+        if (!pageCount) throw new Error('No content could be shown for this file.');
+        entry.pageCount = pageCount;
+        entry.getPage = getPage;
         entry.status = 'ready';
+        if (entry.id === activeId) loadCurrentPage();
       } catch (err) {
         console.error(err);
         entry.status = 'error';
@@ -1476,7 +1542,7 @@
           file,
           status: 'pending',
           error: '',
-          pages: [],
+          getPage: null,
           pageCount: 0,
         }));
         entries.forEach((entry) => {
@@ -1497,18 +1563,22 @@
         if (activeId === id) {
           activeId = null;
           activePage = 0;
+          currentPageCanvas = null;
         }
         notify();
       },
       select(id) {
-        if (!library.some((entry) => entry.id === id)) return;
+        if (!library.some((entry) => entry.id === id) || activeId === id) return;
         activeId = id;
         activePage = 0;
+        currentPageCanvas = null; // switching files — don't show the old one's frame
+        loadCurrentPage();
         notify();
       },
       showLive() {
         activeId = null;
         activePage = 0;
+        currentPageCanvas = null;
         notify();
       },
       getActiveId: () => activeId,
@@ -1522,12 +1592,14 @@
         const entry = library.find((e) => e.id === activeId);
         if (!entry || entry.pageCount < 2) return;
         activePage = (activePage + 1) % entry.pageCount;
+        loadCurrentPage();
         notify();
       },
       prevPage() {
         const entry = library.find((e) => e.id === activeId);
         if (!entry || entry.pageCount < 2) return;
         activePage = (activePage - 1 + entry.pageCount) % entry.pageCount;
+        loadCurrentPage();
         notify();
       },
       goToPage(index) {
@@ -1536,13 +1608,10 @@
         const clamped = Math.max(0, Math.min(entry.pageCount - 1, index));
         if (clamped === activePage) return;
         activePage = clamped;
+        loadCurrentPage();
         notify();
       },
-      getCurrentCanvas() {
-        const entry = library.find((e) => e.id === activeId);
-        if (!entry || entry.status !== 'ready') return null;
-        return entry.pages[activePage] || null;
-      },
+      getCurrentCanvas: () => currentPageCanvas,
     };
   })();
 
