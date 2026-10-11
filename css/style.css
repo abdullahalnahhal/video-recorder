@@ -306,6 +306,12 @@ input {
   opacity: 0.45;
 }
 
+select:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .btn:focus-visible,
 .chip:focus-visible,
 .segmented button:focus-visible,
@@ -491,7 +497,8 @@ input[type="range"] {
   cursor: pointer;
 }
 
-.chip[aria-pressed="true"] {
+.chip[aria-pressed="true"],
+.chip[aria-checked="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: #cfe0ff;

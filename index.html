@@ -124,6 +124,44 @@
         <p class="note" id="bgNote"></p>
       </section>
 
+      <section class="panel" id="lightingPanel">
+        <h2>Lighting</h2>
+        <label class="toggle">
+          <input type="checkbox" id="lightAuto">
+          <span>Auto light correction</span>
+        </label>
+        <div class="row">
+          <label for="lightBrightness">Brightness</label>
+          <input type="range" id="lightBrightness" min="-50" max="50" value="0">
+        </div>
+      </section>
+
+      <section class="panel" id="arPanel">
+        <h2>Fun &amp; AR effects</h2>
+        <div class="chips" id="arGroup" role="radiogroup" aria-label="Face filter">
+          <button type="button" class="chip" role="radio" data-ar="none" aria-checked="true">None</button>
+          <button type="button" class="chip" role="radio" data-ar="sunglasses" aria-checked="false">Sunglasses</button>
+          <button type="button" class="chip" role="radio" data-ar="dog" aria-checked="false">Dog</button>
+          <button type="button" class="chip" role="radio" data-ar="mustache" aria-checked="false">Mustache</button>
+          <button type="button" class="chip" role="radio" data-ar="clownNose" aria-checked="false">Clown nose</button>
+          <button type="button" class="chip" role="radio" data-ar="tophat" aria-checked="false">Top hat</button>
+        </div>
+        <p class="note" id="arNote"></p>
+      </section>
+
+      <section class="panel" id="beautyPanel">
+        <h2>Beauty &amp; touch-up</h2>
+        <div class="row">
+          <label for="beautySmooth">Smooth skin</label>
+          <input type="range" id="beautySmooth" min="0" max="100" value="0">
+        </div>
+        <div class="row">
+          <label for="beautyGlow">Soft glow</label>
+          <input type="range" id="beautyGlow" min="0" max="100" value="0">
+        </div>
+        <p class="note" id="beautyNote"></p>
+      </section>
+
       <section class="panel">
         <h2>Output</h2>
         <div class="row">

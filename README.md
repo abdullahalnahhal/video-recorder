@@ -15,6 +15,9 @@ Everything runs in the browser. Nothing is uploaded, and the video is saved stra
 | **Webcam overlay** | Choose the corner, size (12–40 % of the width) and shape (rounded rectangle or circle) |
 | **Webcam effects** | Blur (adjustable), Black & white, High contrast. They can be combined |
 | **Virtual background** | None, background blur, or any image from `img/backgrounds/` (AI person segmentation, runs locally) |
+| **Lighting** | Manual brightness, or Auto light correction that keeps you visible in a dim room |
+| **Fun & AR effects** | Sunglasses, dog ears & nose, mustache, clown nose, top hat — tracked live to your face (position, tilt, scale) using on-device face tracking |
+| **Beauty & touch-up** | Smooth skin (face-masked, not a flat blur over everything) and Soft glow, both adjustable |
 | **Sound mixer** | A full channel strip for the mic and for system/screen audio: dynamics (compressor), noise control (gate + rumble filter), spatial effects (reverb, delay, echo), routing (mute / include-in-mix), and a sidechain (compression or gating) between the two — see [Sound mixer](#sound-mixer) below |
 | **Recording** | Start, pause/resume, stop. Live timer. 1080p or 720p. MP4 (H.264) or WebM (VP9/VP8) |
 | **Saving** | On stop, a **"Save as" window** opens so you can choose where to save the video |
@@ -93,11 +96,31 @@ Upload the contents of `dist/` to any static host: GitHub Pages, Netlify, Vercel
    - **Webcam**: camera only.
    - **Screen**: the browser asks what to share. Choose **Entire screen**.
    - **Screen + Webcam**: your screen with the webcam in a corner. Adjust it under **Webcam overlay**.
-3. Optional: turn on **Webcam effects** or pick a **Webcam background**. The first background takes a few seconds to load the AI model.
+3. Optional: turn on **Webcam effects**, pick a **Webcam background**, adjust **Lighting**, pick a **Fun & AR effect**, or dial in **Beauty & touch-up**. The first use of a background, AR filter or Smooth skin takes a few seconds to load its AI model (Soft glow and the lighting controls don't need one).
 4. Click **Start recording** and allow the microphone if asked.
 5. Click **Stop & save**, then choose where to save the video in the "Save as" window.
 
 > 💡 To record tab or system sound, tick **"Share tab audio"** / **"Share system audio"** in the browser's screen-share window.
+
+---
+
+## Webcam effects
+
+### Lighting
+
+- **Brightness** — a straightforward manual slider.
+- **Auto light correction** — samples the frame's average brightness every frame and nudges it toward a comfortable mid-tone, so a dim room doesn't make you a silhouette. Turning it on disables the manual slider (they'd otherwise fight each other).
+
+### Fun & AR effects
+
+Pick one filter from **None**, **Sunglasses**, **Dog**, **Mustache**, **Clown nose** or **Top hat**. These aren't fixed images pasted on screen — each frame, on-device face tracking finds your eyes, nose, mouth and forehead, and the filter is redrawn at the right position, rotation and size to follow your face as you move and turn. If no face is in view, the panel says so and the filter just doesn't draw (nothing crashes or freezes).
+
+### Beauty & touch-up
+
+- **Smooth skin** — blends a softened copy of the image over a mask shaped to your face (traced from face-tracking points), so it smooths skin without flattening the background or hair behind you.
+- **Soft glow** — a classic brightened, diffused highlight layered over the whole frame for a dreamy look. This one doesn't need face tracking at all, so it works immediately with no model to load.
+
+Smooth skin and the AR filters share the same face-tracking model (loaded once, the first time either is used); Soft glow and Lighting are independent of it.
 
 ---
 
@@ -155,6 +178,8 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 
 \* The file downloads like any other download. Whether you're asked for a location depends on the browser's download settings (Firefox: *Settings → Downloads → "Always ask you where to save files"*).
 
+AR filters and Smooth skin use the same face-tracking model on every supported browser above — no extra requirement beyond what background replacement already needs.
+
 **Recommended:** the latest Chrome or Edge.
 
 ---
@@ -162,11 +187,12 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 ## How it works
 
 ```
- Webcam ──► [segmentation + background] ──► [effects] ──┐
-                                                         ├──► <canvas> ──► MediaRecorder ──► Blob ──► "Save as"
- Screen ─────────────────────────────────────────────────┘        ▲
-                                                                  │
-      mic ─► trim ─► highpass ─► gate ─► compressor ─┐           │
+                  ┌─ face tracking ─► AR stickers
+ Webcam ──► [beauty touch-up] ──► [segmentation + background] ──► [lighting + effects] ──┐
+                                                                                          ├──► <canvas> ──► MediaRecorder ──► Blob ──► "Save as"
+ Screen ───────────────────────────────────────────────────────────────────────────────────┘        ▲
+                                                                                                     │
+      mic ─► trim ─► highpass ─► gate ─► compressor ─┐                                             │
                                                       ├─ sidechain ─► dry/delay ─► reverb send ─┐
    system ─► trim ─► highpass ─► gate ─► compressor ─┘  (shared)                                ├─► master ─► limiter ──┘ (audio track)
                                                                             reverb bus ───────────┘
@@ -175,7 +201,8 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 - **Compositing:** every frame is drawn onto one `<canvas>` (`canvas.captureStream()`), which is why the source can change mid-recording.
 - **Render clock:** a Web Worker timer drives frames, so recording keeps running when the tab is in the background (`requestAnimationFrame` would pause). It waits for each frame to finish, so slow machines drop frames instead of freezing.
 - **Virtual background:** [MediaPipe Image Segmenter](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter) (selfie model), with the GPU used when available. The library (`js/vendor/mediapipe/`) and model (`models/`) are bundled, so it works offline.
-- **Effects:** Canvas 2D filters (`blur`, `grayscale`, `contrast`). Blur is computed at quarter resolution and scaled up, which is much cheaper and looks the same.
+- **Face tracking (AR + beauty):** [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) finds 478 points on your face each frame. AR stickers are plain Canvas 2D shapes (no image assets) positioned, scaled and rotated from a handful of those points (eye corners for scale/tilt, nose tip, forehead, mouth corners). Smooth skin traces the same points into a face-shaped mask, feathers its edge, and blends a softened copy of the image through it — the same mask/blend technique the background cutout uses, just aimed at skin instead of a person silhouette.
+- **Effects & lighting:** Canvas 2D filters (`blur`, `grayscale`, `contrast`, `brightness`). Blur is computed at quarter resolution and scaled up, which is much cheaper and looks the same. Auto light correction samples an 8×8 downscale of the frame each tick to estimate brightness — cheap enough to not matter, smoothed so it doesn't flicker.
 - **Sound mixer:** a fixed Web Audio graph built once per channel (see [Sound mixer](#sound-mixer)); every control is a parameter change on an always-connected node, never a rewire, so turning an effect on or off mid-recording can't click or glitch.
 - **Saving:** the [File System Access API](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access) (`showSaveFilePicker`), opened directly from the *Stop* click, with a normal download as the fallback.
 
@@ -191,7 +218,8 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 │   ├── vendor/mediapipe/       # MediaPipe Tasks Vision 1.1.0 (JS + WebAssembly)
 │   └── worklets/               # AudioWorklet DSP: noise gate + sidechain processor
 ├── models/
-│   └── selfie_segmenter.tflite # Person segmentation model
+│   ├── selfie_segmenter.tflite # Person segmentation model (background replacement)
+│   └── face_landmarker.task    # Face tracking model (AR stickers + smooth skin)
 ├── img/backgrounds/            # Background images + backgrounds.json
 ├── webpack.*.js                # Optional dev server / production build
 └── package.json
@@ -208,7 +236,10 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 | Text on my screen is reversed | That's the webcam mirror. Untick **Mirror webcam** (it also mirrors the saved video). |
 | No sound from the screen | Tick *Share tab/system audio* in the browser's share window, and keep **Screen / tab audio** on. |
 | Background edges look rough | Improve lighting and use a plain wall behind you. Make sure hardware acceleration is on (`chrome://settings/system`). |
-| Video is choppy | Choose 720p, turn off the background/blur, and close heavy tabs. |
+| AR filter / Smooth skin doesn't appear, panel says "No face detected" | Face tracking needs a clear, front-facing, well-lit view of your face. Move closer to the camera and check nothing is blocking it. |
+| AR sticker lags behind or drifts off my face a little | Normal at the edges of the frame or on fast head turns — the model only runs once per rendered frame. It settles back as soon as you hold still and face the camera. |
+| Smooth skin looks smeared past my face, onto hair/background | Raise **Smooth skin** more slowly and check face tracking actually found your face (see above) — the mask is only as good as the tracking. |
+| Video is choppy | Choose 720p, turn off the background/blur/AR/beauty, and close heavy tabs — running background replacement *and* face tracking together is the heaviest combination. |
 | No "Save as" window | Your browser doesn't support it (Firefox/Safari). The video downloads normally instead. |
 | WebM file has no duration / can't seek | Use **MP4**, or play it in VLC. |
 | Noise gate/compressor/sidechain controls don't seem to do anything | Your browser doesn't support `AudioWorklet` (needs a secure context, same as recording — see above). The mixer falls back to passing audio through unprocessed for those two effects; dynamics, filters, delay/echo and reverb still work. |
@@ -229,6 +260,8 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 - **Deploy over HTTPS.** Camera, screen sharing and the "Save as" window all need it.
 - **Start with the sidechain in compression mode, not gating.** Gating is more aggressive (a hard on/off) and is easy to set too deep by accident, which can make background audio disappear entirely. Compression gives you a gentler, more predictable duck.
 - **A small amount of compression + a light noise gate is usually enough** for a typical voiceover mic. Save reverb/delay/echo for intentional effect, not as a default — they're easy to overdo.
+- **Keep Smooth skin moderate (20–40%).** Pushed higher it starts to look waxy rather than "touched up" — this is true of basically every consumer beauty filter, not just this one.
+- **Running background replacement together with an AR filter or Smooth skin is the heaviest combination** (two AI models inferring every frame). If it gets choppy, turn one off rather than both down a little.
 
 ### For future development
 
@@ -243,13 +276,16 @@ All of it is built on the Web Audio API: a native `DynamicsCompressorNode` for t
 9. **Trim before saving.** Cut the start/end in the preview dialog.
 10. **Annotations.** Draw/highlight on screen and show clicks while recording.
 11. **PWA / offline install.** The project already has a web manifest; add a service worker for an installable app.
-12. **Automated tests.** Puppeteer/Playwright with Chrome's `--use-fake-device-for-media-stream` flag can test the whole flow headlessly (this is how the mixer above was verified — ffprobe/ffmpeg on the recorded output confirms the audio track and its level).
+12. **Automated tests.** Puppeteer/Playwright with Chrome's `--use-fake-device-for-media-stream` flag can test the whole flow headlessly (this is how the mixer and the face effects above were verified — ffprobe/ffmpeg on the recorded output confirms the audio track and its level; Chrome's synthetic test camera has no real face in it, though, so the AR/beauty code paths were verified for not crashing and for the "no face detected" fallback, not for visually accurate tracking against a real face).
 13. **Translations** (e.g. Arabic with RTL layout).
+14. **More AR stickers**, and let people size/nudge one by hand instead of only the automatic face-tracked fit.
+15. **Smooth skin performance:** it currently reruns face tracking every frame even when the picture is static; skipping detection on frames where the image hasn't changed much would cut cost for free.
+16. **Additional beauty tools**, e.g. teeth whitening or under-eye brightening, each scoped to its own small landmark-based mask the same way Smooth skin is.
 
 ---
 
 ## Third-party licenses
 
 - [HTML5 Boilerplate](https://html5boilerplate.com/): MIT (see `LICENSE.txt`)
-- [MediaPipe](https://github.com/google-ai-edge/mediapipe) Tasks Vision & selfie segmentation model: Apache License 2.0
+- [MediaPipe](https://github.com/google-ai-edge/mediapipe) Tasks Vision, selfie segmentation model & face landmarker model: Apache License 2.0
 - Background images in `img/backgrounds/` were generated for this project and are free to use.

@@ -13,7 +13,17 @@
   const MEDIAPIPE_BUNDLE = 'js/vendor/mediapipe/vision_bundle.js';
   const MEDIAPIPE_WASM = 'js/vendor/mediapipe/wasm';
   const SEGMENTER_MODEL = 'models/selfie_segmenter.tflite';
+  const FACE_MODEL = 'models/face_landmarker.task';
   const BACKGROUNDS_DIR = 'img/backgrounds/';
+
+  // Landmark indices from MediaPipe's standard 478-point face mesh, used to
+  // anchor AR stickers and the beauty skin mask. These are the same indices
+  // published in MediaPipe's own face mesh keypoint reference.
+  const LM = { eyeOuterL: 33, eyeOuterR: 263, noseTip: 4, foreheadTop: 10, mouthL: 61, mouthR: 291, mouthTop: 13 };
+  const FACE_OVAL = [
+    10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378,
+    400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+  ];
 
   // The first supported candidate of each group is used.
   const FORMAT_GROUPS = [
@@ -55,6 +65,16 @@
     bgPanel: $('#bgPanel'),
     bgGrid: $('#bgGrid'),
     bgNote: $('#bgNote'),
+    lightingPanel: $('#lightingPanel'),
+    lightAuto: $('#lightAuto'),
+    lightBrightness: $('#lightBrightness'),
+    arPanel: $('#arPanel'),
+    arButtons: $$('#arGroup [data-ar]'),
+    arNote: $('#arNote'),
+    beautyPanel: $('#beautyPanel'),
+    beautySmooth: $('#beautySmooth'),
+    beautyGlow: $('#beautyGlow'),
+    beautyNote: $('#beautyNote'),
     micEnabled: $('#micEnabled'),
     micSelect: $('#micSelect'),
     systemAudio: $('#systemAudio'),
@@ -113,6 +133,12 @@
     blurAmount: Number(els.blurAmount.value),
     mirror: els.mirror.checked,
     background: { id: 'none', image: null },
+    lightAuto: els.lightAuto.checked,
+    lightBrightness: Number(els.lightBrightness.value),
+    lightAutoValue: 1,
+    ar: 'none',
+    beautySmooth: Number(els.beautySmooth.value),
+    beautyGlow: Number(els.beautyGlow.value),
     pip: { corner: 'br', size: Number(els.pipSize.value) / 100, shape: els.pipShape.value },
     formats: [],
     recording: null,
@@ -178,7 +204,28 @@
     if (state.effects.has('blur')) parts.push(`blur(${blurRadius(width).toFixed(1)}px)`);
     if (state.effects.has('grayscale')) parts.push('grayscale(1)');
     if (state.effects.has('contrast')) parts.push('contrast(1.8)');
+    const brightness = state.lightAuto ? state.lightAutoValue : 1 + state.lightBrightness / 100;
+    if (Math.abs(brightness - 1) > 0.01) parts.push(`brightness(${brightness.toFixed(2)})`);
     return parts.length ? parts.join(' ') : 'none';
+  }
+
+  // Cheap auto light correction: sample the average luminance of a tiny copy
+  // of the frame and nudge a brightness multiplier towards a mid-grey target,
+  // smoothed so it doesn't flicker frame to frame.
+  const autoLightProbe = document.createElement('canvas');
+  autoLightProbe.width = 8;
+  autoLightProbe.height = 8;
+  const autoLightCtx = autoLightProbe.getContext('2d', { willReadFrequently: true });
+
+  function updateAutoLight() {
+    if (!state.lightAuto) return;
+    autoLightCtx.drawImage(camVideo, 0, 0, 8, 8);
+    const { data } = autoLightCtx.getImageData(0, 0, 8, 8);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    const mean = Math.max(sum / (data.length / 4) / 255, 0.05);
+    const desired = Math.min(1.6, Math.max(0.85, 0.46 / mean));
+    state.lightAutoValue += (desired - state.lightAutoValue) * 0.15;
   }
 
   // Blurring a full-size frame is expensive, so blur a small copy and scale it
@@ -211,7 +258,7 @@
 
   // Draws the (processed) webcam into the given rectangle, cropped to fill it.
   function drawCamera(x, y, w, h) {
-    let source = segmentation.hasLayer() ? segmentation.layer : camVideo;
+    let source = segmentation.hasLayer() ? segmentation.layer : faceFX.getFrame();
     const sw = camVideo.videoWidth;
     const sh = camVideo.videoHeight;
     const scale = Math.max(w / sw, h / sh);
@@ -219,6 +266,13 @@
     let ch = h / scale;
     let cx = (sw - cw) / 2;
     let cy = (sh - ch) / 2;
+    // Face landmarks are in raw video pixel space; keep the pre-blur crop
+    // around so AR stickers can still be mapped into destination space even
+    // when `source`/cx/cy/cw/ch below get swapped for the small blur canvas.
+    const cropCx = cx;
+    const cropCy = cy;
+    const cropCw = cw;
+    const cropCh = ch;
     let filter = supportsCanvasFilter ? cameraFilter(w) : 'none';
 
     if (supportsCanvasFilter && state.effects.has('blur')) {
@@ -232,15 +286,181 @@
     ctx.rect(x, y, w, h);
     ctx.clip();
     ctx.filter = filter;
+    let destX = x;
+    let destY = y;
     if (state.mirror) {
       ctx.translate(x + w, y);
       ctx.scale(-1, 1);
       ctx.drawImage(source, cx, cy, cw, ch, 0, 0, w, h);
+      destX = 0;
+      destY = 0;
     } else {
       ctx.drawImage(source, cx, cy, cw, ch, x, y, w, h);
     }
+    // Stickers draw crisp and in colour regardless of webcam filters/effects,
+    // same as real AR filters — the filter only applies to the camera image.
+    ctx.filter = 'none';
+    if (state.ar !== 'none') drawArOverlay(destX, destY, w, h, cropCx, cropCy, cropCw, cropCh);
     ctx.restore();
   }
+
+  // Maps AR stickers onto the already-transformed (mirrored/cropped) canvas
+  // space drawCamera() just drew the webcam image into, using face landmarks
+  // detected in raw video pixel space.
+  function drawArOverlay(destX, destY, w, h, cropCx, cropCy, cropCw, cropCh) {
+    const landmarks = faceFX.getLandmarks();
+    if (!landmarks) return;
+    const sw = camVideo.videoWidth;
+    const sh = camVideo.videoHeight;
+    const toLocal = (idx) => {
+      const p = landmarks[idx];
+      return {
+        x: destX + ((p.x * sw - cropCx) / cropCw) * w,
+        y: destY + ((p.y * sh - cropCy) / cropCh) * h,
+      };
+    };
+
+    const eyeL = toLocal(LM.eyeOuterL);
+    const eyeR = toLocal(LM.eyeOuterR);
+    const eyeDist = Math.hypot(eyeR.x - eyeL.x, eyeR.y - eyeL.y);
+    if (!eyeDist) return;
+    const angle = Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x);
+    const center = { x: (eyeL.x + eyeR.x) / 2, y: (eyeL.y + eyeR.y) / 2 };
+    const mouthL = toLocal(LM.mouthL);
+    const mouthR = toLocal(LM.mouthR);
+
+    const anchors = {
+      center,
+      eyeDist,
+      angle,
+      nose: toLocal(LM.noseTip),
+      forehead: toLocal(LM.foreheadTop),
+      mouth: { x: (mouthL.x + mouthR.x) / 2, y: (mouthL.y + mouthR.y) / 2 },
+      mouthTop: toLocal(LM.mouthTop),
+    };
+
+    const draw = AR_STICKERS[state.ar];
+    if (draw) draw(anchors);
+  }
+
+  function drawSunglasses({ center, eyeDist, angle }) {
+    const s = eyeDist;
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(angle);
+    const lensW = s * 0.62;
+    const lensH = s * 0.46;
+    const gap = s * 0.18;
+    ctx.fillStyle = 'rgba(15, 15, 20, 0.92)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.lineWidth = s * 0.04;
+    [-1, 1].forEach((side) => {
+      const lx = side * (gap / 2 + lensW / 2);
+      roundedRectPath(lx - lensW / 2, -lensH / 2, lensW, lensH, lensH * 0.4);
+      ctx.fill();
+      ctx.stroke();
+    });
+    ctx.beginPath();
+    ctx.moveTo(-gap / 2, 0);
+    ctx.lineTo(gap / 2, 0);
+    ctx.lineWidth = s * 0.05;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-(gap / 2 + lensW), 0);
+    ctx.lineTo(-(gap / 2 + lensW + s * 0.3), -s * 0.05);
+    ctx.moveTo(gap / 2 + lensW, 0);
+    ctx.lineTo(gap / 2 + lensW + s * 0.3, -s * 0.05);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawDogFilter({ eyeDist, angle, nose, forehead }) {
+    const s = eyeDist;
+    ctx.save();
+    ctx.translate(forehead.x, forehead.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#6b4a35';
+    [-1, 1].forEach((side) => {
+      ctx.save();
+      ctx.translate(side * s * 0.9, -s * 0.15);
+      ctx.rotate(side * 0.35);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, s * 0.38, s * 0.62, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    });
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(nose.x, nose.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#231815';
+    ctx.beginPath();
+    ctx.ellipse(0, s * 0.08, s * 0.22, s * 0.16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.06, s * 0.02, s * 0.05, s * 0.03, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawMustache({ eyeDist, angle, mouthTop }) {
+    const s = eyeDist;
+    ctx.save();
+    ctx.translate(mouthTop.x, mouthTop.y - s * 0.08);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#2b1a12';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(s * 0.12, -s * 0.12, s * 0.3, -s * 0.05, s * 0.5, s * 0.06);
+    ctx.bezierCurveTo(s * 0.34, s * 0.1, s * 0.16, s * 0.08, 0, s * 0.02);
+    ctx.bezierCurveTo(-s * 0.16, s * 0.08, -s * 0.34, s * 0.1, -s * 0.5, s * 0.06);
+    ctx.bezierCurveTo(-s * 0.3, -s * 0.05, -s * 0.12, -s * 0.12, 0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawClownNose({ eyeDist, angle, nose }) {
+    const s = eyeDist;
+    ctx.save();
+    ctx.translate(nose.x, nose.y);
+    ctx.rotate(angle);
+    const r = s * 0.22;
+    const gradient = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+    gradient.addColorStop(0, '#ff8a8a');
+    gradient.addColorStop(1, '#d81e1e');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawTopHat({ eyeDist, angle, forehead }) {
+    const s = eyeDist;
+    ctx.save();
+    ctx.translate(forehead.x, forehead.y - s * 0.3);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#17171a';
+    ctx.beginPath();
+    ctx.ellipse(0, s * 0.42, s * 0.75, s * 0.14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    roundedRectPath(-s * 0.46, -s * 0.5, s * 0.92, s * 0.9, s * 0.08);
+    ctx.fill();
+    ctx.fillStyle = '#7a1f2b';
+    ctx.fillRect(-s * 0.46, s * 0.18, s * 0.92, s * 0.12);
+    ctx.restore();
+  }
+
+  const AR_STICKERS = {
+    sunglasses: drawSunglasses,
+    dog: drawDogFilter,
+    mustache: drawMustache,
+    clownNose: drawClownNose,
+    tophat: drawTopHat,
+  };
 
   function drawPip(W, H) {
     const { corner, size, shape } = state.pip;
@@ -384,20 +604,21 @@
         layer.height = person.height = h;
       }
 
-      // Cut the person out of the camera frame using the mask.
+      // Cut the person out of the (beauty-processed) camera frame using the mask.
+      const camFrame = faceFX.getFrame();
       personCtx.globalCompositeOperation = 'copy';
       if (supportsCanvasFilter) personCtx.filter = 'blur(2px)';
       personCtx.drawImage(mask, 0, 0, w, h);
       personCtx.filter = 'none';
       personCtx.globalCompositeOperation = 'source-in';
-      personCtx.drawImage(camVideo, 0, 0, w, h);
+      personCtx.drawImage(camFrame, 0, 0, w, h);
       personCtx.globalCompositeOperation = 'source-over';
 
       // Background, then the person on top.
       if (state.background.id === 'blur') {
         const radius = w / 60;
         const filter = supportsCanvasFilter ? `blur(${(radius / BLUR_DOWNSCALE).toFixed(1)}px)` : 'none';
-        layerCtx.drawImage(blurBackground(camVideo, 0, 0, w, h, w, h, filter, radius), 0, 0, w, h);
+        layerCtx.drawImage(blurBackground(camFrame, 0, 0, w, h, w, h, filter, radius), 0, 0, w, h);
       } else {
         // The whole layer is mirrored later, so pre-flip the image to keep it the right way round.
         drawCover(layerCtx, state.background.image, w, h, state.mirror);
@@ -430,7 +651,175 @@
     };
   })();
 
+  /* ------------------------------------------------------------------------
+   * Face effects: AR stickers (via face landmarks) and beauty touch-up
+   * (skin smoothing + soft glow), using MediaPipe Face Landmarker.
+   *
+   * `getFrame()` is the single point the rest of the app reads the "camera
+   * image to show" from — drawCamera() and segmentation.compose() both use
+   * it instead of camVideo directly, so beauty touch-up applies no matter
+   * which source (plain webcam, or segmented-onto-a-background) is active.
+   * --------------------------------------------------------------------- */
+
+  const faceFX = (() => {
+    const frame = document.createElement('canvas');
+    const frameCtx = frame.getContext('2d');
+    const faceMask = document.createElement('canvas');
+    const faceMaskCtx = faceMask.getContext('2d');
+    const skin = document.createElement('canvas');
+    const skinCtx = skin.getContext('2d');
+    const blurSkin = createSmallBlur();
+    const blurGlow = createSmallBlur();
+    let landmarker = null;
+    let loading = null;
+    let landmarks = null;
+    let lastTimestamp = 0;
+    let failures = 0;
+
+    function load() {
+      if (landmarker) return Promise.resolve(landmarker);
+      if (!loading) {
+        loading = (async () => {
+          const url = (path) => new URL(path, document.baseURI).href;
+          const vision = await import(/* webpackIgnore: true */ url(MEDIAPIPE_BUNDLE));
+          const fileset = await vision.FilesetResolver.forVisionTasks(url(MEDIAPIPE_WASM));
+          const create = (delegate) => vision.FaceLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: url(FACE_MODEL), delegate },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+          });
+          try {
+            landmarker = await create('GPU');
+          } catch (err) {
+            console.warn('GPU face tracking unavailable, falling back to CPU.', err);
+            landmarker = await create('CPU');
+          }
+          return landmarker;
+        })();
+        loading.catch(() => {
+          loading = null;
+        });
+      }
+      return loading;
+    }
+
+    // Smooth skin and the AR stickers need tracked landmarks; soft glow is a
+    // plain full-frame effect and works without ever loading the face model.
+    const needsTracking = () => state.ar !== 'none' || state.beautySmooth > 0;
+    const isActive = () => needsTracking() || state.beautyGlow > 0;
+
+    function detect() {
+      let timestamp = performance.now();
+      if (timestamp <= lastTimestamp) timestamp = lastTimestamp + 1;
+      lastTimestamp = timestamp;
+      const result = landmarker.detectForVideo(camVideo, timestamp);
+      landmarks = (result.faceLandmarks && result.faceLandmarks[0]) || null;
+    }
+
+    function tracePath(context, indices, w, h) {
+      context.beginPath();
+      indices.forEach((idx, i) => {
+        const p = landmarks[idx];
+        const x = p.x * w;
+        const y = p.y * h;
+        if (i === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      });
+      context.closePath();
+    }
+
+    function applySmooth(w, h) {
+      const amount = Math.min(1, state.beautySmooth / 100);
+      if (amount <= 0 || !landmarks) return;
+      if (faceMask.width !== w || faceMask.height !== h) {
+        faceMask.width = skin.width = w;
+        faceMask.height = skin.height = h;
+      }
+      faceMaskCtx.clearRect(0, 0, w, h);
+      faceMaskCtx.fillStyle = '#fff';
+      tracePath(faceMaskCtx, FACE_OVAL, w, h);
+      faceMaskCtx.fill();
+
+      const radius = w / 40;
+      const filter = supportsCanvasFilter ? `blur(${(radius / BLUR_DOWNSCALE).toFixed(1)}px)` : 'none';
+      const blurred = blurSkin(frame, 0, 0, w, h, w, h, filter, radius);
+
+      // Same mask-feathering trick used for the segmentation cutout: copy the
+      // mask through a blur so its edge fades, then clip the blurred skin to it.
+      skinCtx.globalCompositeOperation = 'copy';
+      if (supportsCanvasFilter) skinCtx.filter = 'blur(4px)';
+      skinCtx.drawImage(faceMask, 0, 0, w, h);
+      skinCtx.filter = 'none';
+      skinCtx.globalCompositeOperation = 'source-in';
+      skinCtx.drawImage(blurred, 0, 0, blurred.width, blurred.height, 0, 0, w, h);
+      skinCtx.globalCompositeOperation = 'source-over';
+
+      frameCtx.globalAlpha = amount;
+      frameCtx.drawImage(skin, 0, 0, w, h);
+      frameCtx.globalAlpha = 1;
+    }
+
+    function applyGlow(w, h) {
+      const amount = Math.min(1, state.beautyGlow / 100);
+      if (amount <= 0) return;
+      const radius = w / 30;
+      const filter = supportsCanvasFilter ? `blur(${(radius / BLUR_DOWNSCALE).toFixed(1)}px) brightness(1.3)` : 'none';
+      const glow = blurGlow(frame, 0, 0, w, h, w, h, filter, radius);
+      frameCtx.save();
+      frameCtx.globalCompositeOperation = 'screen';
+      frameCtx.globalAlpha = amount * 0.7;
+      frameCtx.drawImage(glow, 0, 0, glow.width, glow.height, 0, 0, w, h);
+      frameCtx.restore();
+    }
+
+    return {
+      isTrackingReady: () => Boolean(landmarker),
+      needsTracking,
+      hasFace: () => Boolean(landmarks),
+      load,
+      getLandmarks: () => landmarks,
+      update() {
+        if (!isActive()) {
+          landmarks = null;
+          return;
+        }
+        try {
+          if (needsTracking() && landmarker) detect();
+          else landmarks = null;
+
+          const w = camVideo.videoWidth;
+          const h = camVideo.videoHeight;
+          if (frame.width !== w || frame.height !== h) {
+            frame.width = w;
+            frame.height = h;
+          }
+          frameCtx.filter = 'none';
+          frameCtx.globalCompositeOperation = 'source-over';
+          frameCtx.drawImage(camVideo, 0, 0, w, h);
+          applySmooth(w, h);
+          applyGlow(w, h);
+          failures = 0;
+        } catch (err) {
+          console.error(err);
+          if (++failures > 10) {
+            failures = 0;
+            state.ar = 'none';
+            state.beautySmooth = 0;
+            state.beautyGlow = 0;
+            syncFaceFxUI();
+            toast('Face effects stopped working and were turned off.', true);
+          }
+        }
+      },
+      // The "camera image to show": the beauty-processed frame once any face
+      // effect is active, otherwise the raw camera feed.
+      getFrame: () => (isActive() && frame.width > 0 ? frame : camVideo),
+    };
+  })();
+
   function updateCameraLayer() {
+    updateAutoLight();
+    faceFX.update();
     segmentation.update();
   }
 
@@ -1474,6 +1863,9 @@
     els.btnChangeScreen.hidden = !needsScreen() || !state.screen;
     els.effectsPanel.setAttribute('aria-disabled', String(!needsCamera()));
     els.bgPanel.setAttribute('aria-disabled', String(!needsCamera()));
+    els.lightingPanel.setAttribute('aria-disabled', String(!needsCamera()));
+    els.arPanel.setAttribute('aria-disabled', String(!needsCamera()));
+    els.beautyPanel.setAttribute('aria-disabled', String(!needsCamera()));
 
     els.btnStart.disabled = Boolean(rec) || state.stopping;
     els.btnPause.disabled = !rec;
@@ -1599,6 +1991,67 @@
     }
   }
 
+  /* Face effects (AR stickers + beauty touch-up) */
+
+  let faceFxLoadState = 'idle'; // idle | loading | ready | error
+  let faceFxError = '';
+  let faceFxLoadPromise = null;
+
+  // Lazily loads the face landmark model the first time an AR sticker or
+  // skin smoothing is requested. Soft glow doesn't need it at all.
+  function ensureFaceFX() {
+    if (faceFxLoadState === 'ready') return Promise.resolve(true);
+    if (faceFxLoadState === 'loading') return faceFxLoadPromise;
+    faceFxLoadState = 'loading';
+    updateFaceNotes();
+    faceFxLoadPromise = faceFX.load().then(
+      () => {
+        faceFxLoadState = 'ready';
+        updateFaceNotes();
+        return true;
+      },
+      (err) => {
+        console.error(err);
+        faceFxLoadState = 'error';
+        faceFxError = `Face tracking is unavailable: ${err.message}`;
+        state.ar = 'none';
+        state.beautySmooth = 0;
+        els.beautySmooth.value = 0;
+        syncFaceFxUI();
+        return false;
+      },
+    );
+    return faceFxLoadPromise;
+  }
+
+  function syncFaceFxUI() {
+    els.arButtons.forEach((button) => {
+      button.setAttribute('aria-checked', String(button.dataset.ar === state.ar));
+    });
+    updateFaceNotes();
+  }
+
+  async function selectAr(id) {
+    if (id !== 'none' && !(await ensureFaceFX())) return;
+    state.ar = id;
+    syncFaceFxUI();
+  }
+
+  function faceStatusMessage() {
+    if (faceFxLoadState === 'error') return faceFxError;
+    if (faceFxLoadState === 'loading') return 'Loading face tracking…';
+    if (faceFX.needsTracking() && faceFX.isTrackingReady() && !faceFX.hasFace()) {
+      return 'No face detected — move into the camera view.';
+    }
+    return '';
+  }
+
+  function updateFaceNotes() {
+    const message = faceStatusMessage();
+    els.arNote.textContent = message;
+    els.beautyNote.textContent = message;
+  }
+
   /* Event wiring */
 
   function bindEvents() {
@@ -1651,6 +2104,26 @@
       if (button) selectBackground(button.dataset.bg);
     });
 
+    els.lightAuto.addEventListener('change', () => {
+      state.lightAuto = els.lightAuto.checked;
+      els.lightBrightness.disabled = state.lightAuto;
+    });
+    els.lightBrightness.addEventListener('input', () => {
+      state.lightBrightness = Number(els.lightBrightness.value);
+    });
+
+    els.arButtons.forEach((button) => {
+      button.addEventListener('click', () => selectAr(button.dataset.ar));
+    });
+    els.beautySmooth.addEventListener('input', async () => {
+      const value = Number(els.beautySmooth.value);
+      if (value > 0 && !(await ensureFaceFX())) return;
+      state.beautySmooth = value;
+    });
+    els.beautyGlow.addEventListener('input', () => {
+      state.beautyGlow = Number(els.beautyGlow.value);
+    });
+
     els.micEnabled.addEventListener('change', async () => {
       if (els.micEnabled.checked) await activateAudioPreview();
       else stopMic();
@@ -1691,6 +2164,7 @@
     });
 
     setInterval(updateTimer, 250);
+    setInterval(updateFaceNotes, 300);
   }
 
   function initFormats() {
