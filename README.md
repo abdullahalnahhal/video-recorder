@@ -11,7 +11,8 @@ Everything runs in the browser. Nothing is uploaded, and the video is saved stra
 | | |
 |---|---|
 | **Sources** | Webcam · Screen · Screen + Webcam (picture-in-picture) |
-| **Switch while recording** | Change source, effects or background mid-recording without breaking the file |
+| **Files & images** | Add PDFs, PowerPoint/Word/Excel files, images or HTML pages, pick one and switch between them — it shows up in the same slot a shared screen would, including inside the PiP overlay. See [Files & images](#files--images) below |
+| **Switch while recording** | Change source, effects, background or file mid-recording without breaking the file |
 | **Webcam overlay** | Choose the corner, size (12–40 % of the width) and shape (rounded rectangle or circle) |
 | **Webcam effects** | Blur (adjustable), Black & white, High contrast. They can be combined |
 | **Virtual background** | None, background blur, or any image from `img/backgrounds/` (AI person segmentation, runs locally) |
@@ -101,6 +102,38 @@ Upload the contents of `dist/` to any static host: GitHub Pages, Netlify, Vercel
 5. Click **Stop & save**, then choose where to save the video in the "Save as" window.
 
 > 💡 To record tab or system sound, tick **"Share tab audio"** / **"Share system audio"** in the browser's screen-share window.
+> 💡 To present a document instead of your screen, open the **Files** tab, add it, and pick it — then switch to **Screen** or **Screen + Webcam**.
+
+---
+
+## Files & images
+
+Open the **Files** tab and click **Add files…** to add any mix of:
+
+- **Images** — PNG, JPG, GIF, WebP, BMP, SVG
+- **PDF**
+- **PowerPoint** — `.pptx`
+- **Word** — `.docx`
+- **Excel** — `.xlsx`
+- **HTML** pages
+
+Pick one from the list and it fills the same slot a shared screen would — switch the **Source** to **Screen** or **Screen + Webcam** to see it on the stage (picking a file while on **Webcam** switches you to **Screen** automatically). A file with several pages/slides/sheets gets **‹ ›** page controls. Click **Stop showing** to go back to a live shared screen. You can keep adding and switching between files, including mid-recording.
+
+**Fidelity:** PDFs and images render pixel-for-pixel like the original — PDF rendering uses [pdf.js](https://mozilla.github.io/pdf.js/), the same engine behind Firefox's built-in PDF viewer. PowerPoint, Word and Excel are a different story: there is no pixel-perfect way to render those formats in a browser without a server to convert them first, and this project has no server. So instead you get an honest, readable stand-in:
+
+| Format | What you see |
+|---|---|
+| **.pptx** | Each slide's text, plus its first picture if it has one, laid out on a plain slide background — not the original design, fonts, animations or layout. |
+| **.docx** | The document's text and basic formatting (headings, bold/italic, lists, images), converted to a simple page — not paginated like Word, not the original fonts/layout. |
+| **.xlsx** | Each sheet as a plain data grid (values only) — not the original cell colors, number formats or charts. |
+
+Older binary Office formats — **.doc, .ppt, .xls** (pre-2007) — aren't supported; save/export the file as **.docx/.pptx/.xlsx** first and add that instead.
+
+A few practical notes:
+- Files are **not uploaded anywhere** and **not saved** between page reloads — everything happens in your browser's memory for this session only.
+- The first PDF, PowerPoint, Word or Excel file you add triggers a one-time download of that format's renderer (a few hundred KB to ~1.5 MB); images and HTML need nothing extra.
+- HTML files (and the HTML a Word file is converted to) render in a sandboxed, script-disabled frame — any `<script>` in an uploaded HTML file will **not** run. Only its layout is captured.
+- There's a 150 MB per-file size limit, and up to 200 pages/slides/sheets are rendered per file.
 
 ---
 
@@ -204,6 +237,7 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 - **Face tracking (AR + beauty):** [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) finds 478 points on your face each frame. AR stickers are plain Canvas 2D shapes (no image assets) positioned, scaled and rotated from a handful of those points (eye corners for scale/tilt, nose tip, forehead, mouth corners). Smooth skin traces the same points into a face-shaped mask, feathers its edge, and blends a softened copy of the image through it — the same mask/blend technique the background cutout uses, just aimed at skin instead of a person silhouette.
 - **Effects & lighting:** Canvas 2D filters (`blur`, `grayscale`, `contrast`, `brightness`). Blur is computed at quarter resolution and scaled up, which is much cheaper and looks the same. Auto light correction samples an 8×8 downscale of the frame each tick to estimate brightness — cheap enough to not matter, smoothed so it doesn't flicker.
 - **Sound mixer:** a fixed Web Audio graph built once per channel (see [Sound mixer](#sound-mixer)); every control is a parameter change on an always-connected node, never a rewire, so turning an effect on or off mid-recording can't click or glitch.
+- **Files & images:** each uploaded file is rendered once, up front, into one `<canvas>` per page/slide/sheet, cached in memory; selecting a file just swaps which cached canvas `drawContain()` draws each frame — identical code path to drawing the live shared screen (see [Files & images](#files--images)). PDFs render through [pdf.js](https://mozilla.github.io/pdf.js/). PPTX slide text/images are pulled directly out of the file's XML via [JSZip](https://stuk.github.io/jszip/) (a `.pptx`/`.docx`/`.xlsx` is just a zip of XML files). DOCX is converted to HTML via [mammoth.js](https://github.com/mwilliamson/mammoth.js). XLSX is parsed with [SheetJS](https://sheetjs.com/). HTML/DOCX output is rasterized with [html2canvas](https://html2canvas.hertzen.com/) inside a sandboxed, script-disabled `<iframe>`.
 - **Saving:** the [File System Access API](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access) (`showSaveFilePicker`), opened directly from the *Stop* click, with a normal download as the fallback.
 
 ---
@@ -216,6 +250,11 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 ├── js/
 │   ├── app.js                  # The whole application
 │   ├── vendor/mediapipe/       # MediaPipe Tasks Vision 1.1.0 (JS + WebAssembly)
+│   ├── vendor/pdfjs/           # pdf.js — PDF rendering
+│   ├── vendor/jszip/           # JSZip — reads .pptx/.docx/.xlsx as zip archives
+│   ├── vendor/mammoth/         # mammoth.js — .docx → HTML
+│   ├── vendor/xlsx/            # SheetJS — .xlsx parsing
+│   ├── vendor/html2canvas/     # html2canvas — rasterizes HTML/.docx output
 │   └── worklets/               # AudioWorklet DSP: noise gate + sidechain processor
 ├── models/
 │   ├── selfie_segmenter.tflite # Person segmentation model (background replacement)
@@ -245,6 +284,9 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 | Noise gate/compressor/sidechain controls don't seem to do anything | Your browser doesn't support `AudioWorklet` (needs a secure context, same as recording — see above). The mixer falls back to passing audio through unprocessed for those two effects; dynamics, filters, delay/echo and reverb still work. |
 | I hear my own voice echoing back / howling feedback | You turned on **Monitor through speakers** without headphones. Turn it off, or switch to headphones. |
 | The mix sounds thin or the music disappears completely | The sidechain is probably set to **gating** with a low threshold — try **compression** mode, or reduce its depth/raise its threshold. |
+| A file I added shows "Could not open this file" | The file may be corrupted, password-protected, or (for Office formats) actually the older binary `.doc`/`.ppt`/`.xls` type saved with a `.docx`/`.pptx`/`.xlsx` extension. Re-save/export it from its original application and add it again. |
+| My PPTX/DOCX/XLSX doesn't look like the original at all | Expected — see [Files & images](#files--images). Only text (+ one picture per slide for PPTX) and plain data come through; layout, fonts, charts and styling from the original file don't. For an exact-looking result, export the file as a **PDF** instead and add that. |
+| Selecting a file didn't switch the stage to show it | Make sure **Source** is set to **Screen** or **Screen + Webcam** — a file only shows in that slot, same as a live shared screen would. Picking a file while on **Webcam** should switch you there automatically. |
 
 ---
 
@@ -262,6 +304,8 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 - **A small amount of compression + a light noise gate is usually enough** for a typical voiceover mic. Save reverb/delay/echo for intentional effect, not as a default — they're easy to overdo.
 - **Keep Smooth skin moderate (20–40%).** Pushed higher it starts to look waxy rather than "touched up" — this is true of basically every consumer beauty filter, not just this one.
 - **Running background replacement together with an AR filter or Smooth skin is the heaviest combination** (two AI models inferring every frame). If it gets choppy, turn one off rather than both down a little.
+- **For a document that needs to look exactly right, export it as a PDF before adding it.** PDF and images are the only formats that render pixel-perfect here — PPTX/DOCX/XLSX are deliberately a simplified stand-in (see [Files & images](#files--images)).
+- **Don't rely on an uploaded HTML file's own `<script>` or live data.** It's rendered as a static snapshot in a script-disabled sandbox — what you see is what you get, it won't update itself.
 
 ### For future development
 
@@ -281,6 +325,9 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 14. **More AR stickers**, and let people size/nudge one by hand instead of only the automatic face-tracked fit.
 15. **Smooth skin performance:** it currently reruns face tracking every frame even when the picture is static; skipping detection on frames where the image hasn't changed much would cut cost for free.
 16. **Additional beauty tools**, e.g. teeth whitening or under-eye brightening, each scoped to its own small landmark-based mask the same way Smooth skin is.
+17. **Remember added files across reloads** with IndexedDB (they currently exist only for the current page session).
+18. **A true PPTX/DOCX renderer**, if it's ever worth the cost: this would realistically mean a small server-side conversion step (e.g. LibreOffice headless) rather than anything achievable fully client-side — a deliberate trade-off this project made to stay a plain static site with no backend.
+19. **Thumbnails** in the file list/picker, generated from each file's first rendered page, instead of a plain name + badge.
 
 ---
 
@@ -288,4 +335,9 @@ AR filters and Smooth skin use the same face-tracking model on every supported b
 
 - [HTML5 Boilerplate](https://html5boilerplate.com/): MIT (see `LICENSE.txt`)
 - [MediaPipe](https://github.com/google-ai-edge/mediapipe) Tasks Vision, selfie segmentation model & face landmarker model: Apache License 2.0
+- [pdf.js](https://github.com/mozilla/pdf.js): Apache License 2.0
+- [JSZip](https://github.com/Stuk/jszip): MIT / GPLv3 (dual-licensed; used here under MIT)
+- [mammoth.js](https://github.com/mwilliamson/mammoth.js): BSD 2-Clause
+- [SheetJS (xlsx)](https://github.com/SheetJS/sheetjs): Apache License 2.0
+- [html2canvas](https://github.com/niklasvh/html2canvas): MIT
 - Background images in `img/backgrounds/` were generated for this project and are free to use.

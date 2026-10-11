@@ -75,6 +75,15 @@
     beautySmooth: $('#beautySmooth'),
     beautyGlow: $('#beautyGlow'),
     beautyNote: $('#beautyNote'),
+    fileInput: $('#fileInput'),
+    btnAddFiles: $('#btnAddFiles'),
+    fileActiveBar: $('#fileActiveBar'),
+    fileActiveLabel: $('#fileActiveLabel'),
+    btnPrevPage: $('#btnPrevPage'),
+    btnNextPage: $('#btnNextPage'),
+    btnStopFile: $('#btnStopFile'),
+    fileList: $('#fileList'),
+    filesNote: $('#filesNote'),
     micEnabled: $('#micEnabled'),
     micSelect: $('#micSelect'),
     systemAudio: $('#systemAudio'),
@@ -174,6 +183,7 @@
 
     const camReady = isReady(camVideo, state.cam);
     const screenReady = isReady(screenVideo, state.screen);
+    const fileCanvas = fileSource.getCurrentCanvas();
 
     if (camReady && needsCamera()) {
       updateCameraLayer();
@@ -184,13 +194,22 @@
       return;
     }
 
-    if (screenReady) drawContain(screenVideo, 0, 0, W, H);
+    // A selected file takes over the same "screen" slot a live shared
+    // screen would otherwise fill — including inside Screen + Webcam PiP.
+    if (fileCanvas) drawContain(fileCanvas, 0, 0, W, H);
+    else if (screenReady) drawContain(screenVideo, 0, 0, W, H);
     if (state.mode === 'both' && camReady) drawPip(W, H);
   }
 
+  // Works for both a <video> source (has videoWidth/videoHeight) and a
+  // rendered-file <canvas> source (has width/height), so a file and a live
+  // shared screen can be drawn identically.
+  function sourceSize(source) {
+    return { w: source.videoWidth || source.width, h: source.videoHeight || source.height };
+  }
+
   function drawContain(source, x, y, w, h) {
-    const sw = source.videoWidth;
-    const sh = source.videoHeight;
+    const { w: sw, h: sh } = sourceSize(source);
     const scale = Math.min(w / sw, h / sh);
     const dw = sw * scale;
     const dh = sh * scale;
@@ -946,6 +965,12 @@
   function onScreenEnded(stream) {
     if (state.screen !== stream) return;
     stopScreen();
+    // A file showing in the same slot isn't affected by the live screen
+    // share ending — there's nothing to fall back to webcam for.
+    if (fileSource.isShowingFile()) {
+      updateOverlay();
+      return;
+    }
     if (state.mode === 'both' && state.cam) {
       setMode('webcam');
       toast('Screen sharing ended — switched to webcam only.');
@@ -1014,7 +1039,7 @@
   // Requests whatever the current mode needs. Screen first: getDisplayMedia
   // must run while the click that triggered it still counts as a user gesture.
   async function ensureSourcesForMode() {
-    const wantScreen = needsScreen() && !state.screen;
+    const wantScreen = needsScreen() && !state.screen && !fileSource.isShowingFile();
     const wantCamera = needsCamera() && !state.cam;
     if (!wantScreen && !wantCamera) return true;
 
@@ -1063,6 +1088,492 @@
     };
     fill(els.cameraSelect, 'videoinput', state.cam, 'Camera');
     fill(els.micSelect, 'audioinput', state.mic, 'Microphone');
+  }
+
+  /* ------------------------------------------------------------------------
+   * File source — upload PDFs, Office files, images or HTML and show one in
+   * the same slot a shared screen would otherwise fill (see render(), above).
+   *
+   * PDFs and images render natively and look exactly like the original.
+   * PowerPoint/Word/Excel have no pixel-faithful renderer available without
+   * a server to convert them, so those get a simplified, readable stand-in
+   * instead: slide text (+ its first picture), converted-to-HTML document
+   * text, or a plain data grid. Clearly a stand-in, not a replica — see the
+   * README's "Files & images" section.
+   * --------------------------------------------------------------------- */
+
+  const MAX_FILE_PAGES = 200;
+  const MAX_FILE_BYTES = 150 * 1024 * 1024; // 150 MB
+
+  // Lazily loads a plain UMD script and returns its global, caching the
+  // promise so concurrent/later requests for the same script share it.
+  const scriptLoadPromises = new Map();
+  function loadScript(src, globalName) {
+    if (window[globalName]) return Promise.resolve(window[globalName]);
+    if (!scriptLoadPromises.has(src)) {
+      scriptLoadPromises.set(src, new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = new URL(src, document.baseURI).href;
+        script.onload = () => (window[globalName] ? resolve(window[globalName]) : reject(new Error(`${globalName} did not load correctly.`)));
+        script.onerror = () => reject(new Error(`Could not load ${src}.`));
+        document.head.append(script);
+      }).catch((err) => {
+        scriptLoadPromises.delete(src);
+        throw err;
+      }));
+    }
+    return scriptLoadPromises.get(src);
+  }
+
+  const loadJSZip = () => loadScript('js/vendor/jszip/jszip.min.js', 'JSZip');
+  const loadMammoth = () => loadScript('js/vendor/mammoth/mammoth.browser.min.js', 'mammoth');
+  const loadXlsx = () => loadScript('js/vendor/xlsx/xlsx.mini.min.js', 'XLSX');
+  const loadHtml2Canvas = () => loadScript('js/vendor/html2canvas/html2canvas.min.js', 'html2canvas');
+
+  let pdfjsPromise = null;
+  function loadPdfJs() {
+    if (!pdfjsPromise) {
+      pdfjsPromise = (async () => {
+        const url = (path) => new URL(path, document.baseURI).href;
+        const pdfjsLib = await import(/* webpackIgnore: true */ url('js/vendor/pdfjs/pdf.min.js'));
+        pdfjsLib.GlobalWorkerOptions.workerSrc = url('js/vendor/pdfjs/pdf.worker.min.js');
+        return pdfjsLib;
+      })();
+    }
+    return pdfjsPromise;
+  }
+
+  async function renderImageFile(file) {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    bitmap.close();
+    return [canvas];
+  }
+
+  async function renderPdfFile(file) {
+    const pdfjsLib = await loadPdfJs();
+    const buffer = await file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+    const pageCount = Math.min(doc.numPages, MAX_FILE_PAGES);
+    const pages = [];
+    for (let i = 1; i <= pageCount; i++) {
+      const page = await doc.getPage(i);
+      const base = page.getViewport({ scale: 1 });
+      // Render at a decent fixed resolution regardless of the PDF's own page size.
+      const scale = Math.min(2200 / base.width, 2200 / base.height, 3);
+      const viewport = page.getViewport({ scale: Math.max(scale, 1) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pages.push(canvas);
+    }
+    return pages;
+  }
+
+  // A simple left-aligned word wrap, used for both slide titles and bullets.
+  function wrapText(c, text, x, y, maxWidth, lineHeight) {
+    const words = String(text).split(/\s+/);
+    let line = '';
+    let cy = y;
+    words.forEach((word) => {
+      const candidate = line ? `${line} ${word}` : word;
+      if (line && c.measureText(candidate).width > maxWidth) {
+        c.fillText(line, x, cy);
+        line = word;
+        cy += lineHeight;
+      } else {
+        line = candidate;
+      }
+    });
+    if (line) c.fillText(line, x, cy);
+    return cy + lineHeight;
+  }
+
+  function renderSlideCanvas(lines, imageBitmap) {
+    const W = 1600;
+    const H = 900;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const c = canvas.getContext('2d');
+    c.fillStyle = '#ffffff';
+    c.fillRect(0, 0, W, H);
+
+    const marginLeft = 80;
+    const textWidth = imageBitmap ? W * 0.52 - marginLeft : W - marginLeft * 2;
+    let y = 110;
+
+    if (imageBitmap) {
+      const maxW = W * 0.4;
+      const maxH = H * 0.7;
+      const scale = Math.min(maxW / imageBitmap.width, maxH / imageBitmap.height, 1);
+      const iw = imageBitmap.width * scale;
+      const ih = imageBitmap.height * scale;
+      c.drawImage(imageBitmap, W - iw - 80, (H - ih) / 2, iw, ih);
+    }
+
+    if (lines.length) {
+      c.fillStyle = '#17171a';
+      c.font = '700 48px system-ui, sans-serif';
+      y = wrapText(c, lines[0], marginLeft, y, textWidth, 56) + 30;
+      c.font = '400 28px system-ui, sans-serif';
+      c.fillStyle = '#3a3a3a';
+      for (let i = 1; i < lines.length && y <= H - 50; i++) {
+        y = wrapText(c, `•  ${lines[i]}`, marginLeft, y, textWidth, 38) + 10;
+      }
+    } else {
+      c.fillStyle = '#9a9a9a';
+      c.font = '400 26px system-ui, sans-serif';
+      c.fillText('(no text on this slide)', marginLeft, H / 2);
+    }
+    return canvas;
+  }
+
+  // Resolves a pptx-internal relative path (e.g. "../media/image1.png",
+  // relative to ppt/slides/slideN.xml) to its absolute zip entry path.
+  function resolveZipPath(base, relative) {
+    return decodeURIComponent(new URL(relative, `file:///${base}`).pathname).replace(/^\//, '');
+  }
+
+  async function renderPptxFile(file) {
+    const JSZip = await loadJSZip();
+    const zip = await JSZip.loadAsync(file);
+    const slideNames = Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]))
+      .slice(0, MAX_FILE_PAGES);
+    if (!slideNames.length) throw new Error('No slides were found in this file.');
+
+    const parser = new DOMParser();
+    const pages = [];
+    for (const name of slideNames) {
+      const xml = await zip.files[name].async('text');
+      const slideDoc = parser.parseFromString(xml, 'application/xml');
+      const lines = Array.from(slideDoc.getElementsByTagNameNS('*', 't'))
+        .map((node) => node.textContent.trim())
+        .filter(Boolean);
+
+      let imageBitmap = null;
+      const relsName = name.replace('slides/', 'slides/_rels/') + '.rels';
+      const relsFile = zip.files[relsName];
+      if (relsFile) {
+        const relsXml = await relsFile.async('text');
+        const relsDoc = parser.parseFromString(relsXml, 'application/xml');
+        const imageRel = Array.from(relsDoc.getElementsByTagName('Relationship'))
+          .find((rel) => /image/i.test(rel.getAttribute('Type') || ''));
+        if (imageRel) {
+          const mediaPath = resolveZipPath(name, imageRel.getAttribute('Target'));
+          const mediaFile = zip.files[mediaPath];
+          if (mediaFile) {
+            const blob = await mediaFile.async('blob');
+            imageBitmap = await createImageBitmap(blob).catch(() => null);
+          }
+        }
+      }
+      pages.push(renderSlideCanvas(lines, imageBitmap));
+    }
+    return pages;
+  }
+
+  // Renders an HTML string by loading it into a sandboxed, off-screen iframe
+  // and rasterizing it. Deliberately sandboxed without `allow-scripts` —
+  // uploaded files are untrusted content, and we only need to read their
+  // rendered layout, not run anything inside it.
+  async function renderHtmlString(htmlString) {
+    const html2canvas = await loadHtml2Canvas();
+    const W = 1280;
+    const H = 960;
+    const iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-same-origin';
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-99999px';
+    iframe.style.top = '0';
+    iframe.width = String(W);
+    iframe.height = String(H);
+    document.body.append(iframe);
+    try {
+      await new Promise((resolve, reject) => {
+        iframe.addEventListener('load', resolve, { once: true });
+        iframe.addEventListener('error', () => reject(new Error('Could not load the document.')), { once: true });
+        iframe.srcdoc = htmlString;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 60)); // let images finish decoding
+      return await html2canvas(iframe.contentDocument.body, {
+        width: W, height: H, windowWidth: W, windowHeight: H, scale: 1.5, backgroundColor: '#ffffff',
+      });
+    } finally {
+      iframe.remove();
+    }
+  }
+
+  async function renderHtmlFile(file) {
+    return [await renderHtmlString(await file.text())];
+  }
+
+  async function renderDocxFile(file) {
+    const mammothLib = await loadMammoth();
+    const buffer = await file.arrayBuffer();
+    const { value: bodyHtml } = await mammothLib.convertToHtml({ arrayBuffer: buffer });
+    const documentHtml = `<!doctype html><html><head><meta charset="utf-8"><style>
+      body { font-family: Georgia, "Times New Roman", serif; color: #1a1a1a; background: #fff; margin: 56px; line-height: 1.5; }
+      h1, h2, h3 { font-family: system-ui, sans-serif; }
+      img { max-width: 100%; }
+    </style></head><body>${bodyHtml}</body></html>`;
+    return [await renderHtmlString(documentHtml)];
+  }
+
+  function truncateToWidth(c, text, maxWidth) {
+    if (c.measureText(text).width <= maxWidth) return text;
+    let out = text;
+    while (out.length > 1 && c.measureText(`${out}…`).width > maxWidth) out = out.slice(0, -1);
+    return `${out}…`;
+  }
+
+  function renderSheetCanvas(sheetName, rows) {
+    const MAX_ROWS = 60;
+    const MAX_COLS = 15;
+    const visibleRows = rows.slice(0, MAX_ROWS);
+    const widestRow = Math.max(1, ...visibleRows.map((row) => row.length));
+    const colCount = Math.min(MAX_COLS, widestRow);
+    const truncated = rows.length > MAX_ROWS || widestRow > MAX_COLS;
+
+    const cellW = 150;
+    const cellH = 34;
+    const headerH = 46;
+    const W = Math.max(640, colCount * cellW + 2);
+    const H = headerH + Math.max(1, visibleRows.length) * cellH + 40;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const c = canvas.getContext('2d');
+    c.fillStyle = '#ffffff';
+    c.fillRect(0, 0, W, H);
+    c.fillStyle = '#17171a';
+    c.font = '700 22px system-ui, sans-serif';
+    c.fillText(sheetName, 12, 28);
+
+    c.font = '400 15px system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    visibleRows.forEach((row, r) => {
+      const y = headerH + r * cellH;
+      for (let col = 0; col < colCount; col++) {
+        const x = col * cellW;
+        if (r === 0) {
+          c.fillStyle = '#eef1f6';
+          c.fillRect(x, y, cellW, cellH);
+        }
+        c.strokeStyle = '#d8dce3';
+        c.strokeRect(x, y, cellW, cellH);
+        const value = row[col] != null ? String(row[col]) : '';
+        c.fillStyle = '#1a1a1a';
+        c.fillText(truncateToWidth(c, value, cellW - 14), x + 7, y + cellH / 2);
+      }
+    });
+
+    if (truncated) {
+      c.fillStyle = '#8a8f99';
+      c.font = 'italic 13px system-ui, sans-serif';
+      c.fillText('(showing a limited preview of this sheet)', 12, H - 14);
+    }
+    return canvas;
+  }
+
+  async function renderXlsxFile(file) {
+    const XLSX = await loadXlsx();
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: 'array' });
+    const sheetNames = workbook.SheetNames.slice(0, MAX_FILE_PAGES);
+    if (!sheetNames.length) throw new Error('No sheets were found in this file.');
+    return sheetNames.map((name) => {
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '', raw: false });
+      return renderSheetCanvas(name, rows);
+    });
+  }
+
+  const FILE_KIND_BY_EXT = {
+    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', bmp: 'image', svg: 'image',
+    pdf: 'pdf', pptx: 'pptx', docx: 'docx', xlsx: 'xlsx', html: 'html', htm: 'html',
+    doc: 'legacy', ppt: 'legacy', xls: 'legacy',
+  };
+  const FILE_KIND_LABEL = {
+    image: 'Image', pdf: 'PDF', pptx: 'Slides', docx: 'Document', xlsx: 'Sheet', html: 'Web page', legacy: 'Legacy Office', unknown: 'File',
+  };
+  const FILE_RENDERERS = {
+    image: renderImageFile, pdf: renderPdfFile, pptx: renderPptxFile, docx: renderDocxFile, xlsx: renderXlsxFile, html: renderHtmlFile,
+  };
+
+  function fileKind(file) {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (FILE_KIND_BY_EXT[ext]) return FILE_KIND_BY_EXT[ext];
+    return file.type.startsWith('image/') ? 'image' : 'unknown';
+  }
+
+  const fileSource = (() => {
+    const library = [];
+    let activeId = null;
+    let activePage = 0;
+    let nextId = 1;
+    let onChange = null;
+
+    function notify() {
+      if (onChange) onChange();
+    }
+
+    async function process(entry) {
+      entry.status = 'loading';
+      notify();
+      try {
+        if (entry.kind === 'legacy') {
+          throw new Error('This is an older Office format. Save/export it as .docx, .pptx or .xlsx and add it again.');
+        }
+        const renderer = FILE_RENDERERS[entry.kind];
+        if (!renderer) throw new Error("This file type isn't supported.");
+        const pages = await renderer(entry.file);
+        if (!pages || !pages.length) throw new Error('No content could be shown for this file.');
+        entry.pages = pages;
+        entry.pageCount = pages.length;
+        entry.status = 'ready';
+      } catch (err) {
+        console.error(err);
+        entry.status = 'error';
+        entry.error = err.message || 'Could not open this file.';
+      }
+      notify();
+    }
+
+    return {
+      onChange(fn) {
+        onChange = fn;
+      },
+      list: () => library,
+      add(fileList) {
+        const entries = Array.from(fileList).map((file) => ({
+          id: `file${nextId++}`,
+          name: file.name,
+          kind: fileKind(file),
+          file,
+          status: 'pending',
+          error: '',
+          pages: [],
+          pageCount: 0,
+        }));
+        entries.forEach((entry) => {
+          if (entry.file.size > MAX_FILE_BYTES) {
+            entry.status = 'error';
+            entry.error = 'This file is too large (over 150 MB).';
+          }
+        });
+        library.push(...entries);
+        notify();
+        entries.filter((entry) => entry.status === 'pending').forEach(process);
+        return entries;
+      },
+      remove(id) {
+        const index = library.findIndex((entry) => entry.id === id);
+        if (index === -1) return;
+        library.splice(index, 1);
+        if (activeId === id) {
+          activeId = null;
+          activePage = 0;
+        }
+        notify();
+      },
+      select(id) {
+        if (!library.some((entry) => entry.id === id)) return;
+        activeId = id;
+        activePage = 0;
+        notify();
+      },
+      showLive() {
+        activeId = null;
+        activePage = 0;
+        notify();
+      },
+      getActiveId: () => activeId,
+      getActive: () => library.find((entry) => entry.id === activeId) || null,
+      getActivePage: () => activePage,
+      isShowingFile() {
+        const entry = library.find((e) => e.id === activeId);
+        return Boolean(entry && entry.status === 'ready');
+      },
+      nextPage() {
+        const entry = library.find((e) => e.id === activeId);
+        if (!entry || entry.pageCount < 2) return;
+        activePage = (activePage + 1) % entry.pageCount;
+        notify();
+      },
+      prevPage() {
+        const entry = library.find((e) => e.id === activeId);
+        if (!entry || entry.pageCount < 2) return;
+        activePage = (activePage - 1 + entry.pageCount) % entry.pageCount;
+        notify();
+      },
+      getCurrentCanvas() {
+        const entry = library.find((e) => e.id === activeId);
+        if (!entry || entry.status !== 'ready') return null;
+        return entry.pages[activePage] || null;
+      },
+    };
+  })();
+
+  /* Files panel UI */
+
+  const FILE_STATUS_LABEL = { pending: 'Waiting…', loading: 'Loading…', ready: '', error: '' };
+
+  function fileListItemTemplate(entry) {
+    const isActive = entry.id === fileSource.getActiveId();
+    const label = FILE_KIND_LABEL[entry.kind] || FILE_KIND_LABEL.unknown;
+    let status = '';
+    if (entry.status === 'ready') status = entry.pageCount > 1 ? `${entry.pageCount} pages` : 'Ready';
+    else if (entry.status === 'error') status = entry.error;
+    else status = FILE_STATUS_LABEL[entry.status] || '';
+
+    return `
+      <button type="button" class="file-item-main" data-file-select="${entry.id}" ${entry.status !== 'ready' ? 'disabled' : ''}>
+        <span class="file-badge">${label}</span>
+        <span class="file-item-text">
+          <span class="file-item-name">${entry.name}</span>
+          <span class="file-item-status${entry.status === 'error' ? ' error' : ''}">${status}</span>
+        </span>
+      </button>
+      <button type="button" class="file-item-remove" data-file-remove="${entry.id}" aria-label="Remove ${entry.name}">✕</button>
+    `;
+  }
+
+  function renderFileList() {
+    const entries = fileSource.list();
+    els.filesNote.hidden = entries.length > 0;
+
+    els.fileList.replaceChildren(...entries.map((entry) => {
+      const li = document.createElement('li');
+      li.className = `file-item${entry.id === fileSource.getActiveId() ? ' active' : ''}`;
+      li.innerHTML = fileListItemTemplate(entry);
+      return li;
+    }));
+
+    const active = fileSource.getActive();
+    const showingFile = fileSource.isShowingFile();
+    els.fileActiveBar.hidden = !showingFile;
+    if (showingFile) {
+      const page = fileSource.getActivePage();
+      els.fileActiveLabel.textContent = active.pageCount > 1
+        ? `${active.name} — page ${page + 1} of ${active.pageCount}`
+        : active.name;
+      const noPaging = active.pageCount < 2;
+      els.btnPrevPage.disabled = noPaging;
+      els.btnNextPage.disabled = noPaging;
+    }
+    updateUI(); // also refreshes the overlay
+  }
+
+  async function selectLibraryFile(id) {
+    fileSource.select(id); // triggers renderFileList() via fileSource.onChange()
+    if (state.mode === 'webcam') await setMode('screen');
   }
 
   /* ------------------------------------------------------------------------
@@ -1834,11 +2345,11 @@
 
     if (state.busy) {
       message = state.busy;
-    } else if (needsScreen() && !state.screen && needsCamera() && !state.cam) {
+    } else if (needsScreen() && !state.screen && !fileSource.isShowingFile() && needsCamera() && !state.cam) {
       message = 'Share your screen and turn on your camera to get started.';
       action = 'Share screen & camera';
-    } else if (needsScreen() && !state.screen) {
-      message = 'Choose the screen you want to record.';
+    } else if (needsScreen() && !state.screen && !fileSource.isShowingFile()) {
+      message = 'Choose the screen you want to record, or show a file from the Files tab.';
       action = 'Share screen';
     } else if (needsCamera() && !state.cam) {
       message = state.camError ? describeMediaError(state.camError, 'camera') : 'Allow camera access to see your webcam.';
@@ -1860,7 +2371,7 @@
       button.setAttribute('aria-checked', String(button.dataset.mode === state.mode));
     });
     els.pipPanel.hidden = state.mode !== 'both';
-    els.btnChangeScreen.hidden = !needsScreen() || !state.screen;
+    els.btnChangeScreen.hidden = !needsScreen() || !state.screen || fileSource.isShowingFile();
     els.effectsPanel.setAttribute('aria-disabled', String(!needsCamera()));
     els.bgPanel.setAttribute('aria-disabled', String(!needsCamera()));
     els.lightingPanel.setAttribute('aria-disabled', String(!needsCamera()));
@@ -2124,6 +2635,21 @@
       state.beautyGlow = Number(els.beautyGlow.value);
     });
 
+    els.btnAddFiles.addEventListener('click', () => els.fileInput.click());
+    els.fileInput.addEventListener('change', () => {
+      if (els.fileInput.files.length) fileSource.add(els.fileInput.files);
+      els.fileInput.value = ''; // allow re-adding the same file later
+    });
+    els.fileList.addEventListener('click', (event) => {
+      const selectBtn = event.target.closest('[data-file-select]');
+      const removeBtn = event.target.closest('[data-file-remove]');
+      if (selectBtn) selectLibraryFile(selectBtn.dataset.fileSelect);
+      else if (removeBtn) fileSource.remove(removeBtn.dataset.fileRemove);
+    });
+    els.btnPrevPage.addEventListener('click', () => fileSource.prevPage());
+    els.btnNextPage.addEventListener('click', () => fileSource.nextPage());
+    els.btnStopFile.addEventListener('click', () => fileSource.showLive());
+
     els.micEnabled.addEventListener('change', async () => {
       if (els.micEnabled.checked) await activateAudioPreview();
       else stopMic();
@@ -2207,6 +2733,8 @@
     wireMasterPanel();
     wireTabs();
     startMeterLoop();
+    fileSource.onChange(renderFileList);
+    renderFileList();
     updateUI();
     ensureCamera().then(updateUI);
   }

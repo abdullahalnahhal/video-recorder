@@ -56,6 +56,7 @@
       <div class="segmented tabs" role="tablist" aria-label="Settings" id="settingsTabs">
         <button type="button" role="tab" data-tab="video" aria-selected="true">Video</button>
         <button type="button" role="tab" data-tab="audio" aria-selected="false">Sound</button>
+        <button type="button" role="tab" data-tab="files" aria-selected="false">Files</button>
       </div>
 
       <div class="tab-panel" data-tab-panel="video">
@@ -254,6 +255,32 @@
           <span>Monitor through speakers</span>
         </label>
         <p class="note">Only enable monitoring with headphones — otherwise the mic will pick up the speaker output.</p>
+      </section>
+
+      </div>
+
+      <div class="tab-panel" data-tab-panel="files" hidden>
+
+      <section class="panel" id="filesPanel">
+        <h2>Files &amp; images</h2>
+        <input type="file" id="fileInput" multiple hidden
+          accept=".pdf,.pptx,.docx,.xlsx,.ppt,.doc,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg,.html,.htm,image/*">
+        <button type="button" class="btn btn-small" id="btnAddFiles">Add files…</button>
+
+        <div class="file-active-bar" id="fileActiveBar" hidden>
+          <button type="button" class="btn btn-page" id="btnPrevPage" aria-label="Previous page">‹</button>
+          <span id="fileActiveLabel" class="file-active-label"></span>
+          <button type="button" class="btn btn-page" id="btnNextPage" aria-label="Next page">›</button>
+          <button type="button" class="btn btn-small" id="btnStopFile">Stop showing</button>
+        </div>
+
+        <ul class="file-list" id="fileList"></ul>
+        <p class="note" id="filesNote">Add a PDF, PowerPoint, Word, Excel, image or HTML file, then pick one to show it the same way a shared screen is shown — switch to the <strong>Screen</strong> or <strong>Screen + Webcam</strong> source to see it on the stage.</p>
+      </section>
+
+      <section class="panel">
+        <h2>About file support</h2>
+        <p class="note">PDFs and images render exactly as the original. PowerPoint, Word and Excel files have no pixel-perfect renderer available without a server, so they show a simplified stand-in instead: each slide's text (plus its first picture), the document's text reformatted as a simple page, or a plain data grid for each sheet. Older binary formats (.doc, .ppt, .xls) aren't supported — save/export them as .docx, .pptx or .xlsx first.</p>
       </section>
 
       </div>

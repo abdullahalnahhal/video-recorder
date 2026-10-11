@@ -477,7 +477,7 @@ input[type="range"] {
 }
 
 .tabs {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   margin-bottom: 14px;
 }
 
@@ -723,6 +723,123 @@ input[type="range"] {
 
 .channel-strip summary::marker {
   color: var(--accent);
+}
+
+/* Files panel */
+
+.btn-page {
+  padding: 6px 12px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.file-active-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.file-active-label {
+  flex: 1;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.file-item-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.file-item-main:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.file-item.active .file-item-main {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.file-badge {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.file-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.file-item-name {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.file-item-status.error {
+  color: #ff8a95;
+}
+
+.file-item-remove {
+  flex-shrink: 0;
+  width: 32px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.file-item-remove:hover {
+  border-color: rgba(255, 77, 94, 0.5);
+  color: #ff8a95;
 }
 
 /* ==========================================================================
