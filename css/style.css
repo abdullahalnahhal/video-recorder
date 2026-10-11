@@ -265,19 +265,115 @@ input {
   }
 }
 
-/* Controls */
+/* Recording controls — an icon-only stack on the left edge of the stage.
+   Only Start shows while idle; Pause and Stop take over once recording. */
 
-.controls {
+.stage-controls {
+  position: absolute;
+  top: 50%;
+  left: 20px;
+  z-index: 2;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 16px;
+  flex-direction: column;
+  gap: 16px;
+  transform: translateY(-50%);
 }
 
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 68px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  transform: scale(1.06);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.icon-btn-record {
+  background: var(--danger);
+}
+
+.icon-btn-record:hover:not(:disabled) {
+  background: #ff6b79;
+}
+
+.icon-btn-secondary {
+  background: rgba(23, 23, 26, 0.88);
+  border: 2px solid rgba(255, 255, 255, 0.14);
+}
+
+.icon-btn-secondary:hover:not(:disabled) {
+  background: rgba(38, 43, 54, 0.95);
+}
+
+.icon-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.icon-square {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.icon-pause {
+  display: flex;
+  gap: 7px;
+}
+
+.icon-pause span {
+  width: 8px;
+  height: 26px;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.icon-play {
+  width: 0;
+  height: 0;
+  margin-left: 4px;
+  border-top: 14px solid transparent;
+  border-bottom: 14px solid transparent;
+  border-left: 22px solid #fff;
+}
+
+@media (max-width: 700px) {
+  .stage-controls {
+    left: 12px;
+    gap: 12px;
+  }
+
+  .icon-btn {
+    width: 52px;
+    height: 52px;
+  }
+}
+
+/* Hint */
+
 .hint {
-  flex-basis: 100%;
-  margin: 4px 0 0;
+  margin: 12px 0 0;
   color: var(--muted);
   font-size: 13px;
 }
@@ -313,6 +409,7 @@ input:disabled {
 }
 
 .btn:focus-visible,
+.icon-btn:focus-visible,
 .chip:focus-visible,
 .segmented button:focus-visible,
 .bg-item:focus-visible,
@@ -332,36 +429,11 @@ input:disabled {
   background: #6a9dff;
 }
 
-.btn-record {
-  border-color: var(--danger);
-  background: var(--danger);
-  color: #fff;
-}
-
-.btn-record:hover:not(:disabled) {
-  border-color: #ff6b79;
-  background: #ff6b79;
-}
-
 .btn-small {
   width: 100%;
   margin-top: 10px;
   padding: 7px 12px;
   font-size: 13px;
-}
-
-.icon-rec {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #fff;
-}
-
-.icon-stop {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: currentColor;
 }
 
 /* Side panels */

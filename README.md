@@ -98,8 +98,8 @@ Upload the contents of `dist/` to any static host: GitHub Pages, Netlify, Vercel
    - **Screen**: the browser asks what to share. Choose **Entire screen**.
    - **Screen + Webcam**: your screen with the webcam in a corner. Adjust it under **Webcam overlay**.
 3. Optional: turn on **Webcam effects**, pick a **Webcam background**, adjust **Lighting**, pick a **Fun & AR effect**, or dial in **Beauty & touch-up**. The first use of a background, AR filter or Smooth skin takes a few seconds to load its AI model (Soft glow and the lighting controls don't need one).
-4. Click **Start recording** and allow the microphone if asked.
-5. Click **Stop & save**, then choose where to save the video in the "Save as" window.
+4. Click the large red button on the left edge of the stage to start, and allow the microphone if asked. It's the only control shown until you do — once recording, it's replaced by **Pause** and **Stop** (also icon-only, same spot).
+5. Click **Stop**, then choose where to save the video in the "Save as" window.
 
 > 💡 To record tab or system sound, tick **"Share tab audio"** / **"Share system audio"** in the browser's screen-share window.
 > 💡 To present a document, open the **Files** tab, add it, and pick it — it shows up right away, with its own toggle to add your webcam in a corner if you want it.

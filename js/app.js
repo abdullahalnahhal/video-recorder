@@ -46,6 +46,8 @@
     overlayAction: $('#stageAction'),
     btnStart: $('#btnStart'),
     btnPause: $('#btnPause'),
+    iconPause: $('#iconPause'),
+    iconPlay: $('#iconPlay'),
     btnStop: $('#btnStop'),
     recStatus: $('#recStatus'),
     recStatusText: $('#recStatusText'),
@@ -2403,10 +2405,17 @@
     els.arPanel.setAttribute('aria-disabled', String(!needsCamera()));
     els.beautyPanel.setAttribute('aria-disabled', String(!needsCamera()));
 
+    // Only Start shows while idle; Pause and Stop take over once recording
+    // (including while paused) and disappear again once it's fully stopped.
     els.btnStart.disabled = Boolean(rec) || state.stopping;
-    els.btnPause.disabled = !rec;
-    els.btnPause.textContent = recState === 'paused' ? 'Resume' : 'Pause';
-    els.btnStop.disabled = !rec;
+    els.btnStart.hidden = Boolean(rec) || state.stopping;
+    els.btnPause.hidden = !rec;
+    els.btnStop.hidden = !rec;
+    const paused = recState === 'paused';
+    els.iconPause.hidden = paused;
+    els.iconPlay.hidden = !paused;
+    els.btnPause.setAttribute('aria-label', paused ? 'Resume' : 'Pause');
+    els.btnPause.title = paused ? 'Resume' : 'Pause';
     els.resolution.disabled = Boolean(rec);
     els.format.disabled = Boolean(rec);
 

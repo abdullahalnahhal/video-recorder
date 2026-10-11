@@ -37,18 +37,22 @@
           <p id="stageMessage"></p>
           <button type="button" class="btn btn-primary" id="stageAction" hidden></button>
         </div>
+
+        <div class="stage-controls" id="stageControls">
+          <button type="button" class="icon-btn icon-btn-record" id="btnStart" aria-label="Start recording" title="Start recording">
+            <span class="icon-dot" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="icon-btn icon-btn-secondary" id="btnPause" aria-label="Pause" title="Pause" hidden>
+            <span class="icon-pause" id="iconPause" aria-hidden="true"><span></span><span></span></span>
+            <span class="icon-play" id="iconPlay" aria-hidden="true" hidden></span>
+          </button>
+          <button type="button" class="icon-btn icon-btn-secondary" id="btnStop" aria-label="Stop and save" title="Stop and save" hidden>
+            <span class="icon-square" aria-hidden="true"></span>
+          </button>
+        </div>
       </div>
 
-      <div class="controls">
-        <button type="button" class="btn btn-record" id="btnStart">
-          <span class="icon-rec"></span> Start recording
-        </button>
-        <button type="button" class="btn" id="btnPause" disabled>Pause</button>
-        <button type="button" class="btn btn-stop" id="btnStop" disabled>
-          <span class="icon-stop"></span> Stop &amp; save
-        </button>
-        <p class="hint" id="hint">When you stop, a “Save as” window opens so you can choose where to save the video.</p>
-      </div>
+      <p class="hint" id="hint">When you stop, a “Save as” window opens so you can choose where to save the video.</p>
     </section>
 
     <aside class="panel-col">
